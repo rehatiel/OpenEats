@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { cartTotals } from '$lib/mockData';
   import type { MockTable } from '$lib/mockData';
   import { apiJson } from '$lib/api';
   import { auth, logout } from '$lib/stores/auth';
-  import { floorState } from '$lib/stores/floorState';
+  import { summarizeTable, groupOrdersByTable, combineOrderLines } from '$lib/orders';
+  import type { OrderRow } from '$lib/orders';
   import TableTile from '$lib/components/TableTile.svelte';
   import OrderStatusBadge from '$lib/components/OrderStatusBadge.svelte';
   import Button from '$lib/components/Button.svelte';
@@ -21,27 +21,34 @@
     height: number;
   }
 
-  // Live status (status/minutesOpen/total/order) is still mock/in-session
-  // data via the shared floorState store — a full live order-lifecycle
-  // backend is out of scope here. Layout (position, seats, shape, label) is
-  // real, admin-configured data. Merged by `label`, since the DB `id` is an
-  // unrelated surrogate key while the mock `id` field is actually the
+  // Layout (position, seats, shape, label) is real admin-configured data.
+  // Occupancy status/total/order are derived live from real unpaid orders
+  // polled from the backend — merged by `label`, since the DB `id` is an
+  // unrelated surrogate key while the order's table_identifier is the
   // human-facing table number.
   let layout: TableLayoutRow[] = [];
+  let unpaidOrders: OrderRow[] = [];
   let loading = true;
   let loadError = '';
   let selectedId = '4';
 
-  $: merged = layout.map((row) => ({
-    ...($floorState[row.label] ?? { status: 'open' as const }),
-    id: row.label,
-    seats: row.seats,
-    shape: row.shape,
-    pos_x: row.pos_x,
-    pos_y: row.pos_y,
-    width: row.width,
-    height: row.height,
-  }));
+  const POLL_MS = 5000;
+
+  $: byTable = groupOrdersByTable(unpaidOrders);
+  $: merged = layout.map((row) => {
+    const ordersForTable = byTable[row.label];
+    return {
+      ...summarizeTable(ordersForTable),
+      id: row.label,
+      seats: row.seats,
+      shape: row.shape,
+      pos_x: row.pos_x,
+      pos_y: row.pos_y,
+      width: row.width,
+      height: row.height,
+      order: ordersForTable ? combineOrderLines(ordersForTable) : undefined,
+    };
+  });
   $: selected = (merged.find((t) => t.id === selectedId) ?? merged[0]) as (MockTable & {
     pos_x: number;
     pos_y: number;
@@ -50,7 +57,7 @@
   }) | undefined;
   $: occupiedCount = merged.filter((t) => t.status !== 'open').length;
 
-  onMount(async () => {
+  async function loadLayout() {
     try {
       layout = await apiJson<TableLayoutRow[]>('/api/tables');
       if (layout.length && !layout.some((t) => t.label === selectedId)) {
@@ -59,9 +66,22 @@
       loadError = '';
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load table layout';
-    } finally {
-      loading = false;
     }
+  }
+
+  async function loadOrders() {
+    try {
+      unpaidOrders = await apiJson<OrderRow[]>('/api/orders?payment_status=unpaid');
+    } catch {
+      // Keep the last-known occupancy state; a transient poll failure
+      // shouldn't blank out the floor plan.
+    }
+  }
+
+  onMount(() => {
+    Promise.all([loadLayout(), loadOrders()]).finally(() => (loading = false));
+    const pollId = setInterval(loadOrders, POLL_MS);
+    return () => clearInterval(pollId);
   });
 
   const legend: { label: string; class: string }[] = [
@@ -175,14 +195,14 @@
           {:else if selected.status === 'open'}
             <div class="px-5 py-8 text-center text-sm text-counter-muted">This table is open — seat a party to start an order.</div>
           {:else}
-            <div class="px-5 py-8 text-center text-sm text-counter-muted">Order details aren't itemized in this demo.</div>
+            <div class="px-5 py-8 text-center text-sm text-counter-muted">No itemized order found for this table.</div>
           {/if}
         </div>
 
         <div class="border-t border-[#eee6d8] px-5 py-4">
           <div class="mb-3.5 flex justify-between text-xl font-extrabold text-counter-ink">
             <span>Total</span>
-            <span class="font-mono">${(selected.order ? cartTotals(selected.order).total : selected.total ?? 0).toFixed(2)}</span>
+            <span class="font-mono">${(selected.total ?? 0).toFixed(2)}</span>
           </div>
           <div class="flex gap-2.5">
             <div class="flex-1"><Button variant="secondary" fullWidth on:click={() => goto('/')}>Add items</Button></div>

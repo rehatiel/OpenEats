@@ -41,26 +41,38 @@ function initDb(dbPath) {
       PRIMARY KEY (menu_item_id, ingredient_id)
     );
 
+    -- kitchen_status tracks the KDS prep lifecycle (new -> cooking -> ready ->
+    -- completed); payment_status tracks whether the table/order has settled.
+    -- These are independent axes — a table can be fully cooked and served
+    -- (kitchen_status='completed') while still unpaid, which is exactly the
+    -- "needs bill" signal the floor plan derives from real order data.
+    -- timestamp is stored as ISO-8601 UTC with a trailing Z (not SQLite's bare
+    -- CURRENT_TIMESTAMP, which omits the zone marker) so JS new Date(...)
+    -- parses it as UTC instead of silently misreading it as local time.
     CREATE TABLE IF NOT EXISTS orders (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      type                TEXT NOT NULL CHECK (type IN ('dine_in', 'to_go', 'delivery')),
-      table_identifier    TEXT,
-      status              TEXT NOT NULL DEFAULT 'open',
-      subtotal            REAL NOT NULL DEFAULT 0,
-      tax                 REAL NOT NULL DEFAULT 0,
-      total               REAL NOT NULL DEFAULT 0,
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      type                 TEXT NOT NULL CHECK (type IN ('dine_in', 'to_go', 'delivery')),
+      table_identifier     TEXT,
+      server_name          TEXT,
+      kitchen_status       TEXT NOT NULL DEFAULT 'new' CHECK (kitchen_status IN ('new', 'cooking', 'ready', 'completed')),
+      payment_status       TEXT NOT NULL DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'paid')),
+      subtotal             REAL NOT NULL DEFAULT 0,
+      tax                  REAL NOT NULL DEFAULT 0,
+      total                REAL NOT NULL DEFAULT 0,
       calculated_food_cost REAL NOT NULL DEFAULT 0,
-      timestamp           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      timestamp            TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
     -- Not in the original 4-table list, but required: without line items there
     -- is no record of what was ordered, so food cost/subtotal couldn't be
-    -- computed (or re-derived later) at all.
+    -- computed (or re-derived later) at all. note carries kitchen-facing
+    -- special instructions per line (e.g. "no onion").
     CREATE TABLE IF NOT EXISTS order_items (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id      INTEGER NOT NULL REFERENCES orders(id),
       menu_item_id  INTEGER NOT NULL REFERENCES menu_items(id),
-      quantity      INTEGER NOT NULL
+      quantity      INTEGER NOT NULL,
+      note          TEXT
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -72,9 +84,9 @@ function initDb(dbPath) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- Table-layout configuration only (position/size/seats). Live order/status
-    -- state for the floor plan still comes from frontend mock data, since a
-    -- full live order-lifecycle backend is out of scope here.
+    -- Table-layout configuration only (position/size/seats). Live occupancy
+    -- status for the floor plan is derived at read time from orders rows
+    -- referencing a table's label, not stored here.
     CREATE TABLE IF NOT EXISTS tables (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       label      TEXT NOT NULL,

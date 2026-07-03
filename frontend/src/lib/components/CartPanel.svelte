@@ -9,6 +9,7 @@
   export let orderType: OrderType;
   export let tableLabel: string | null = null;
   export let sent = false;
+  export let sending = false;
 
   const dispatch = createEventDispatcher<{
     inc: number;
@@ -119,8 +120,14 @@
     <div class="mb-3.5 flex justify-between text-xl font-extrabold text-counter-ink">
       <span>Total</span><span class="font-mono">${totals.total.toFixed(2)}</span>
     </div>
-    <Button variant="primary" size="lg" fullWidth disabled={cart.length === 0 || sent} on:click={() => dispatch('send')}>
-      {sent ? 'Sent to Kitchen ✓' : `Send to Kitchen (${itemCount}) →`}
+    <Button
+      variant="primary"
+      size="lg"
+      fullWidth
+      disabled={cart.length === 0 || sent || sending}
+      on:click={() => dispatch('send')}
+    >
+      {sending ? 'Sending…' : sent ? 'Sent to Kitchen ✓' : `Send to Kitchen (${itemCount}) →`}
     </Button>
   </div>
 </div>

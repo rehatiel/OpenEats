@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { MENU_ITEMS, CATEGORIES, DEMO_CART, TABLES } from '$lib/mockData';
+  import { MENU_ITEMS, CATEGORIES } from '$lib/mockData';
   import type { CartLine, OrderType, MockMenuItem, MockTable } from '$lib/mockData';
   import { apiJson } from '$lib/api';
   import { auth, logout } from '$lib/stores/auth';
   import { settings } from '$lib/stores/settings';
+  import { summarizeTable, groupOrdersByTable } from '$lib/orders';
+  import type { OrderRow } from '$lib/orders';
   import CategoryTabs from '$lib/components/CategoryTabs.svelte';
   import ItemTile from '$lib/components/ItemTile.svelte';
   import CartPanel from '$lib/components/CartPanel.svelte';
@@ -17,8 +19,10 @@
   let menuItems: MockMenuItem[] = MENU_ITEMS;
   let categories: string[] = [...CATEGORIES];
   let activeCategory: string = categories[0];
-  let cart: CartLine[] = DEMO_CART.map((l) => ({ ...l }));
+  let cart: CartLine[] = [];
   let sent = false;
+  let sending = false;
+  let sendError = '';
   let mobileCartOpen = false;
 
   // Table selection for dine-in orders — sourced from the same admin-configured
@@ -26,6 +30,8 @@
   // servers unfamiliar with the table numbers can recognize them by position.
   interface TableLayoutRow {
     label: string;
+    seats: number;
+    shape: 'square' | 'round';
     pos_x: number;
     pos_y: number;
     width: number;
@@ -42,11 +48,16 @@
 
   onMount(async () => {
     try {
-      const layout = await apiJson<TableLayoutRow[]>('/api/tables');
-      const mockByLabel = Object.fromEntries(TABLES.map((t) => [t.id, t]));
+      const [layout, unpaidOrders] = await Promise.all([
+        apiJson<TableLayoutRow[]>('/api/tables'),
+        apiJson<OrderRow[]>('/api/orders?payment_status=unpaid'),
+      ]);
+      const byTable = groupOrdersByTable(unpaidOrders);
       tableOptions = layout.map((row) => ({
-        ...(mockByLabel[row.label] ?? { status: 'open' as const, seats: 2 }),
+        ...summarizeTable(byTable[row.label]),
         id: row.label,
+        seats: row.seats,
+        shape: row.shape,
         pos_x: row.pos_x,
         pos_y: row.pos_y,
         width: row.width,
@@ -120,14 +131,36 @@
     tableError = false;
   }
 
-  function handleSend() {
+  async function handleSend() {
     if (orderType === 'dine_in' && !selectedTable) {
       tableError = true;
       tablePickerOpen = true;
       return;
     }
-    sent = true;
-    mobileCartOpen = false;
+    if (cart.length === 0 || sending) return;
+
+    sending = true;
+    sendError = '';
+    try {
+      await apiJson('/api/orders', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: orderType,
+          table_identifier: orderType === 'dine_in' ? selectedTable : null,
+          items: cart.map((l) => ({ menu_item_id: l.menu_item_id, quantity: l.quantity, note: l.note })),
+        }),
+      });
+      // Only clear the cart once the kitchen has actually confirmed receipt —
+      // otherwise a failed request would silently drop the order.
+      cart = [];
+      sent = true;
+      mobileCartOpen = false;
+      setTimeout(() => (sent = false), 2500);
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : 'Failed to send order to the kitchen';
+    } finally {
+      sending = false;
+    }
   }
 </script>
 
@@ -197,6 +230,11 @@
         Select a table before sending this dine-in order to the kitchen.
       </div>
     {/if}
+    {#if sendError}
+      <div class="mx-4 mt-3 rounded-lg bg-[#FEF0E9] px-4 py-2.5 text-sm font-semibold text-[#C2410C] sm:mx-5">
+        {sendError}
+      </div>
+    {/if}
 
     <!-- category tabs -->
     <div class="flex-none overflow-x-auto px-4 py-3 sm:px-5">
@@ -215,7 +253,7 @@
 
   <!-- CART: persistent side rail on wide/landscape screens -->
   <div class="hidden lg:flex lg:w-[372px] lg:flex-none lg:flex-col lg:border-l lg:border-counter-line lg:bg-white">
-    <CartPanel {cart} {orderType} {tableLabel} {sent} on:inc={(e) => inc(e.detail)} on:dec={(e) => dec(e.detail)} on:send={handleSend} on:clear={clearOrder} on:note={(e) => setNote(e.detail.id, e.detail.note)} />
+    <CartPanel {cart} {orderType} {tableLabel} {sent} {sending} on:inc={(e) => inc(e.detail)} on:dec={(e) => dec(e.detail)} on:send={handleSend} on:clear={clearOrder} on:note={(e) => setNote(e.detail.id, e.detail.note)} />
   </div>
 
   <!-- CART: sticky summary bar on narrow/portrait screens -->
@@ -247,7 +285,7 @@
       on:keydown={(e) => e.key === 'Escape' && (mobileCartOpen = false)}
     >
       <div class="mt-auto max-h-[85vh] rounded-t-2xl bg-white">
-        <CartPanel {cart} {orderType} {tableLabel} {sent} on:inc={(e) => inc(e.detail)} on:dec={(e) => dec(e.detail)} on:send={handleSend} on:clear={clearOrder} on:note={(e) => setNote(e.detail.id, e.detail.note)} />
+        <CartPanel {cart} {orderType} {tableLabel} {sent} {sending} on:inc={(e) => inc(e.detail)} on:dec={(e) => dec(e.detail)} on:send={handleSend} on:clear={clearOrder} on:note={(e) => setNote(e.detail.id, e.detail.note)} />
       </div>
     </div>
   {/if}

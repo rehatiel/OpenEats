@@ -40,10 +40,6 @@ export const MENU_ITEMS: MockMenuItem[] = [
 
 export const CATEGORIES = ['Tacos', 'Burritos', 'Sides', 'Drinks', 'Salsas'] as const;
 
-export const TAX_RATE = 0.0825;
-
-// The canonical demo order threaded through Order Entry, the Table 4 tile
-// on the floor plan, and Checkout — so the numbers agree everywhere.
 export interface CartLine {
   menu_item_id: number;
   name: string;
@@ -52,23 +48,19 @@ export interface CartLine {
   note?: string;
 }
 
-export const DEMO_ORDER_ID = 'A47';
-
-export const DEMO_CART: CartLine[] = [
-  { menu_item_id: 1, name: 'Al Pastor', unit_price: 3.75, quantity: 3 },
-  { menu_item_id: 3, name: 'Barbacoa', unit_price: 4.25, quantity: 2, note: 'no onion' },
-  { menu_item_id: 15, name: 'Horchata', unit_price: 3.0, quantity: 2 },
-];
-
-export function cartTotals(lines: CartLine[]) {
-  const subtotal = lines.reduce((sum, l) => sum + l.unit_price * l.quantity, 0);
-  const tax = subtotal * TAX_RATE;
-  return { subtotal, tax, total: subtotal + tax };
-}
-
 // ---- Table management ----
 
 export type TableStatus = 'open' | 'occupied' | 'needs_bill' | 'ready';
+
+// Deliberately lighter than CartLine (no menu_item_id) — a table's displayed
+// order is a read-only combined view across possibly several real backend
+// orders, not something added to/removed from by id like an active cart.
+export interface TableOrderLine {
+  quantity: number;
+  name: string;
+  unit_price: number;
+  note?: string;
+}
 
 export interface MockTable {
   id: string;
@@ -77,29 +69,8 @@ export interface MockTable {
   minutesOpen?: number;
   total?: number;
   shape?: 'square' | 'round';
-  order?: CartLine[];
+  order?: TableOrderLine[];
 }
-
-export const TABLES: MockTable[] = [
-  { id: '1', seats: 2, status: 'open' },
-  { id: '2', seats: 4, status: 'occupied', minutesOpen: 18, total: 34.0 },
-  { id: '3', seats: 2, status: 'occupied', minutesOpen: 9, total: 19.25 },
-  {
-    id: '4',
-    seats: 2,
-    status: 'needs_bill',
-    minutesOpen: 41,
-    total: cartTotals(DEMO_CART).total,
-    order: DEMO_CART,
-  },
-  { id: '5', seats: 6, shape: 'round', status: 'occupied', minutesOpen: 24, total: 88.5 },
-  { id: '6', seats: 4, status: 'ready', minutesOpen: 6 },
-  { id: '7', seats: 4, status: 'open' },
-  { id: '8', seats: 2, status: 'needs_bill', minutesOpen: 52, total: 41.0 },
-  { id: '9', seats: 4, status: 'occupied', minutesOpen: 12, total: 52.75 },
-  { id: '10', seats: 2, status: 'open' },
-  { id: '11', seats: 4, status: 'occupied', minutesOpen: 3, total: 14.5 },
-];
 
 // ---- Kitchen Display System ----
 
@@ -121,65 +92,6 @@ export interface MockTicket {
   lines: TicketLine[];
   drinks?: TicketLine[];
 }
-
-export const KDS_TICKETS: MockTicket[] = [
-  {
-    orderId: 'A47',
-    type: 'dine_in',
-    table: '4',
-    server: 'Maya',
-    status: 'new',
-    elapsed: '01:12',
-    lines: [
-      { quantity: 3, name: 'Al Pastor' },
-      { quantity: 2, name: 'Barbacoa', note: 'no onion' },
-    ],
-    drinks: [{ quantity: 2, name: 'Horchata' }],
-  },
-  {
-    orderId: 'A48',
-    type: 'to_go',
-    status: 'cooking',
-    elapsed: '04:38',
-    lines: [
-      { quantity: 4, name: 'Carnitas' },
-      { quantity: 1, name: 'Pescado' },
-      { quantity: 1, name: 'Chips & Guac' },
-    ],
-  },
-  {
-    orderId: 'A46',
-    type: 'delivery',
-    status: 'late',
-    elapsed: '08:52',
-    lines: [
-      { quantity: 6, name: 'Pollo Asado' },
-      { quantity: 3, name: 'Veggie', note: 'extra salsa verde' },
-    ],
-  },
-  {
-    orderId: 'A49',
-    type: 'dine_in',
-    table: '2',
-    server: 'Leo',
-    status: 'new',
-    elapsed: '00:32',
-    lines: [
-      { quantity: 2, name: 'Chorizo' },
-      { quantity: 1, name: 'Nopales' },
-    ],
-  },
-  {
-    orderId: 'A45',
-    type: 'to_go',
-    status: 'ready',
-    elapsed: '00:00',
-    lines: [
-      { quantity: 2, name: 'Al Pastor' },
-      { quantity: 1, name: 'Jarritos' },
-    ],
-  },
-];
 
 // ---- Financials dashboard ----
 
