@@ -9,13 +9,19 @@ function createTablesRouter(db) {
   const listTables = db.prepare('SELECT * FROM tables WHERE active = 1 ORDER BY sort_order');
   const getTable = db.prepare('SELECT * FROM tables WHERE id = ?');
   const insertTable = db.prepare(`
-    INSERT INTO tables (label, seats, shape, pos_x, pos_y, width, height, sort_order, active)
-    VALUES (@label, @seats, @shape, @pos_x, @pos_y, @width, @height, @sort_order, 1)
+    INSERT INTO tables (label, seats, shape, pos_x, pos_y, width, height, sort_order, active, orderable)
+    VALUES (@label, @seats, @shape, @pos_x, @pos_y, @width, @height, @sort_order, 1, @orderable)
   `);
   const nextSortOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM tables');
   const updateTableRow = db.prepare(
-    'UPDATE tables SET label = ?, seats = ?, shape = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, sort_order = ? WHERE id = ?'
+    'UPDATE tables SET label = ?, seats = ?, shape = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, sort_order = ?, orderable = ? WHERE id = ?'
   );
+
+  // `orderable` is only ever meaningfully overridden by explicit true/false —
+  // anything else (missing, non-boolean) falls back to the given default.
+  function resolveOrderable(value, fallback) {
+    return typeof value === 'boolean' ? (value ? 1 : 0) : fallback;
+  }
 
   // Any authenticated role can read the layout — every POS screen needs it.
   router.get('/', requireAuth, (_req, res) => {
@@ -23,7 +29,7 @@ function createTablesRouter(db) {
   });
 
   router.post('/', requireAuth, requireRole('admin'), (req, res) => {
-    const { label, seats, shape } = req.body ?? {};
+    const { label, seats, shape, orderable } = req.body ?? {};
     if (typeof label !== 'string' || label.trim() === '') {
       return res.status(400).json({ error: 'label is required' });
     }
@@ -42,6 +48,7 @@ function createTablesRouter(db) {
       width: size,
       height: size,
       sort_order: nextSortOrder.get().n,
+      orderable: resolveOrderable(orderable, 1),
     });
     res.status(201).json(getTable.get(lastInsertRowid));
   });
@@ -68,6 +75,7 @@ function createTablesRouter(db) {
           Number.isFinite(row.width) ? row.width : existing.width,
           Number.isFinite(row.height) ? row.height : existing.height,
           Number.isFinite(row.sort_order) ? row.sort_order : existing.sort_order,
+          resolveOrderable(row.orderable, existing.orderable),
           row.id
         );
       }
@@ -89,9 +97,9 @@ function createTablesRouter(db) {
       return res.status(404).json({ error: 'table not found' });
     }
 
-    const { label, seats, shape, pos_x, pos_y, width, height } = req.body ?? {};
+    const { label, seats, shape, pos_x, pos_y, width, height, orderable } = req.body ?? {};
     db.prepare(
-      'UPDATE tables SET label = ?, seats = ?, shape = ?, pos_x = ?, pos_y = ?, width = ?, height = ? WHERE id = ?'
+      'UPDATE tables SET label = ?, seats = ?, shape = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, orderable = ? WHERE id = ?'
     ).run(
       typeof label === 'string' && label.trim() !== '' ? label.trim() : existing.label,
       Number.isInteger(seats) && seats > 0 ? seats : existing.seats,
@@ -100,6 +108,7 @@ function createTablesRouter(db) {
       Number.isFinite(pos_y) ? pos_y : existing.pos_y,
       Number.isFinite(width) ? width : existing.width,
       Number.isFinite(height) ? height : existing.height,
+      resolveOrderable(orderable, existing.orderable),
       id
     );
     res.json(getTable.get(id));

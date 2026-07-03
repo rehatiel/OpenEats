@@ -16,9 +16,11 @@ function createOrdersRouter(db) {
     WHERE ri.menu_item_id = ?
   `);
   const getTaxRate = db.prepare("SELECT value FROM settings WHERE key = 'tax_rate'");
+  const getRecipeLines = db.prepare('SELECT ingredient_id, quantity_required FROM recipe_items WHERE menu_item_id = ?');
+  const decrementStock = db.prepare('UPDATE ingredients SET current_stock = current_stock - ? WHERE id = ?');
   const insertOrder = db.prepare(`
-    INSERT INTO orders (type, table_identifier, server_name, subtotal, tax, total, calculated_food_cost)
-    VALUES (@type, @table_identifier, @server_name, @subtotal, @tax, @total, @calculated_food_cost)
+    INSERT INTO orders (type, table_identifier, customer_name, server_name, subtotal, tax, total, calculated_food_cost)
+    VALUES (@type, @table_identifier, @customer_name, @server_name, @subtotal, @tax, @total, @calculated_food_cost)
   `);
   const insertOrderItem = db.prepare(`
     INSERT INTO order_items (order_id, menu_item_id, quantity, note)
@@ -41,7 +43,9 @@ function createOrdersRouter(db) {
   // underlying food cost (sales - food cost = profit) from the current recipe
   // and ingredient cost data at the moment of submission.
   router.post('/', requireAuth, (req, res) => {
-    const { type, table_identifier, items } = req.body ?? {};
+    const { type, table_identifier, customer_name: customerNameRaw, items } = req.body ?? {};
+    const customerName =
+      typeof customerNameRaw === 'string' && customerNameRaw.trim() !== '' ? customerNameRaw.trim() : null;
 
     if (!VALID_TYPES.includes(type)) {
       return res.status(400).json({ error: `type must be one of: ${VALID_TYPES.join(', ')}` });
@@ -83,6 +87,7 @@ function createOrdersRouter(db) {
       const { lastInsertRowid } = insertOrder.run({
         type,
         table_identifier: table_identifier ?? null,
+        customer_name: customerName,
         server_name: req.user.name,
         subtotal,
         tax,
@@ -92,6 +97,12 @@ function createOrdersRouter(db) {
 
       for (const item of resolvedItems) {
         insertOrderItem.run(lastInsertRowid, item.menu_item_id, item.quantity, item.note);
+        // Ingredients are consumed as soon as the kitchen is told to make the
+        // item, not when it's paid for. Items with no recipe built yet (the
+        // common case until an admin sets one up) simply deduct nothing.
+        for (const line of getRecipeLines.all(item.menu_item_id)) {
+          decrementStock.run(line.quantity_required * item.quantity, line.ingredient_id);
+        }
       }
 
       return lastInsertRowid;
@@ -103,12 +114,25 @@ function createOrdersRouter(db) {
   // Any authenticated role can read orders — the kitchen display polls this
   // for active tickets and the floor plan polls it for table occupancy.
   router.get('/', requireAuth, (req, res) => {
-    const { kitchen_status: kitchenStatusParam, payment_status: paymentStatusParam, table_identifier: tableParam } =
-      req.query;
+    const {
+      kitchen_status: kitchenStatusParam,
+      payment_status: paymentStatusParam,
+      table_identifier: tableParam,
+      type: typeParam,
+    } = req.query;
 
     let sql = 'SELECT * FROM orders WHERE 1=1';
     const params = [];
 
+    if (typeParam) {
+      const types = String(typeParam)
+        .split(',')
+        .filter((t) => VALID_TYPES.includes(t));
+      if (types.length) {
+        sql += ` AND type IN (${types.map(() => '?').join(', ')})`;
+        params.push(...types);
+      }
+    }
     if (kitchenStatusParam) {
       const statuses = String(kitchenStatusParam)
         .split(',')
@@ -138,10 +162,19 @@ function createOrdersRouter(db) {
     res.json(orders.map(serialize));
   });
 
-  // Bulk-settles every unpaid order for a table in one transaction, so a
-  // table that received multiple "send to kitchen" rounds pays off as one
-  // tab. Registered before /:id so "pay-table" isn't swallowed as an :id.
-  router.patch('/pay-table', requireAuth, (req, res) => {
+  router.get('/:id', requireAuth, (req, res) => {
+    const order = getOrder.get(Number(req.params.id));
+    if (!order) {
+      return res.status(404).json({ error: 'order not found' });
+    }
+    res.json(serialize(order));
+  });
+
+  // Stamps every currently-unpaid order for a table as having had its bill
+  // printed — surfaced on the Register queue so front-counter staff can see
+  // which tables have already been given their check. Registered before
+  // /:id so "mark-bill-printed" isn't swallowed as an :id.
+  router.patch('/mark-bill-printed', requireAuth, (req, res) => {
     const { table_identifier: tableIdentifier } = req.body ?? {};
     if (typeof tableIdentifier !== 'string' || tableIdentifier.trim() === '') {
       return res.status(400).json({ error: 'table_identifier is required' });
@@ -156,10 +189,10 @@ function createOrdersRouter(db) {
       return res.status(404).json({ error: 'no unpaid orders for this table' });
     }
 
-    const markPaid = db.prepare("UPDATE orders SET payment_status = 'paid' WHERE id = ?");
-    db.transaction((ids) => ids.forEach((id) => markPaid.run(id)))(unpaidIds);
+    const stamp = db.prepare("UPDATE orders SET bill_printed_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?");
+    db.transaction((ids) => ids.forEach((id) => stamp.run(id)))(unpaidIds);
 
-    res.json({ paid: unpaidIds });
+    res.json({ marked: unpaidIds });
   });
 
   router.patch('/:id', requireAuth, (req, res) => {

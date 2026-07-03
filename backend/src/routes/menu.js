@@ -1,20 +1,106 @@
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
+const multer = require('multer');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
-function createMenuRouter(db) {
+const ALLOWED_IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+
+// uploadsDir is passed in from index.js, which already knows DB_PATH — images
+// live on the same volume as the SQLite file so they survive restarts with
+// no extra compose configuration.
+function createMenuRouter(db, uploadsDir) {
   const router = express.Router();
 
+  const menuDir = path.join(uploadsDir, 'menu');
+  fs.mkdirSync(menuDir, { recursive: true });
+
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: menuDir,
+      filename: (req, file, cb) => {
+        const ext = ALLOWED_IMAGE_TYPES[file.mimetype];
+        cb(null, `menuitem-${req.params.id}-${Date.now()}.${ext}`);
+      },
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      cb(null, Boolean(ALLOWED_IMAGE_TYPES[file.mimetype]));
+    },
+  });
+
   const listMenuItems = db.prepare(
-    'SELECT id, name, category, retail_price, active FROM menu_items WHERE active = 1 ORDER BY category, name'
+    'SELECT id, name, category, retail_price, active, image_url FROM menu_items WHERE active = 1 ORDER BY category, name'
   );
-  const getMenuItem = db.prepare('SELECT id, name, category, retail_price, active FROM menu_items WHERE id = ?');
+  const getMenuItem = db.prepare(
+    'SELECT id, name, category, retail_price, active, image_url FROM menu_items WHERE id = ?'
+  );
   const insertMenuItem = db.prepare(
     'INSERT INTO menu_items (name, category, retail_price, active) VALUES (?, ?, ?, 1)'
   );
+  const listOptionsFor = db.prepare('SELECT id, label FROM menu_item_options WHERE menu_item_id = ? ORDER BY sort_order');
+  const listAllOptions = db.prepare('SELECT id, menu_item_id, label FROM menu_item_options ORDER BY menu_item_id, sort_order');
+  const countOptionsFor = db.prepare('SELECT COUNT(*) AS n FROM menu_item_options WHERE menu_item_id = ?');
+  const insertOption = db.prepare(
+    'INSERT INTO menu_item_options (menu_item_id, label, sort_order) VALUES (?, ?, ?)'
+  );
+  const getOption = db.prepare('SELECT id FROM menu_item_options WHERE id = ? AND menu_item_id = ?');
+  const deleteOption = db.prepare('DELETE FROM menu_item_options WHERE id = ?');
+
+  // Recipe lines drive both the food-cost calculation on orders.js and
+  // (once an admin has built them) stock deduction when an order is sent to
+  // the kitchen.
+  const listAllRecipeLines = db.prepare(`
+    SELECT ri.menu_item_id, ri.ingredient_id, ri.quantity_required, i.name, i.unit
+    FROM recipe_items ri
+    JOIN ingredients i ON i.id = ri.ingredient_id
+    ORDER BY ri.menu_item_id, i.name
+  `);
+  const getIngredient = db.prepare('SELECT id FROM ingredients WHERE id = ? AND active = 1');
+  const getRecipeLine = db.prepare('SELECT 1 FROM recipe_items WHERE menu_item_id = ? AND ingredient_id = ?');
+  const insertRecipeLine = db.prepare(
+    'INSERT INTO recipe_items (menu_item_id, ingredient_id, quantity_required) VALUES (?, ?, ?)'
+  );
+  const updateRecipeLine = db.prepare(
+    'UPDATE recipe_items SET quantity_required = ? WHERE menu_item_id = ? AND ingredient_id = ?'
+  );
+  const deleteRecipeLine = db.prepare('DELETE FROM recipe_items WHERE menu_item_id = ? AND ingredient_id = ?');
+
+  const listRecipeFor = db.prepare(`
+    SELECT ri.ingredient_id, ri.quantity_required, i.name, i.unit
+    FROM recipe_items ri
+    JOIN ingredients i ON i.id = ri.ingredient_id
+    WHERE ri.menu_item_id = ?
+    ORDER BY i.name
+  `);
+
+  function withOptions(item) {
+    return { ...item, options: listOptionsFor.all(item.id), recipe: listRecipeFor.all(item.id) };
+  }
 
   // Any authenticated role can read the menu — Order Entry needs it.
   router.get('/', requireAuth, (_req, res) => {
-    res.json(listMenuItems.all());
+    const items = listMenuItems.all();
+    const optionsByItem = {};
+    for (const opt of listAllOptions.all()) {
+      (optionsByItem[opt.menu_item_id] ??= []).push({ id: opt.id, label: opt.label });
+    }
+    const recipeByItem = {};
+    for (const line of listAllRecipeLines.all()) {
+      (recipeByItem[line.menu_item_id] ??= []).push({
+        ingredient_id: line.ingredient_id,
+        name: line.name,
+        unit: line.unit,
+        quantity_required: line.quantity_required,
+      });
+    }
+    res.json(
+      items.map((item) => ({
+        ...item,
+        options: optionsByItem[item.id] ?? [],
+        recipe: recipeByItem[item.id] ?? [],
+      }))
+    );
   });
 
   router.post('/', requireAuth, requireRole('admin'), (req, res) => {
@@ -30,7 +116,7 @@ function createMenuRouter(db) {
     }
 
     const { lastInsertRowid } = insertMenuItem.run(name.trim(), category.trim(), retailPrice);
-    res.status(201).json(getMenuItem.get(lastInsertRowid));
+    res.status(201).json(withOptions(getMenuItem.get(lastInsertRowid)));
   });
 
   router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
@@ -58,7 +144,7 @@ function createMenuRouter(db) {
       next.active,
       id
     );
-    res.json(getMenuItem.get(id));
+    res.json(withOptions(getMenuItem.get(id)));
   });
 
   // Soft delete only — an order_items row may still reference this item.
@@ -70,6 +156,84 @@ function createMenuRouter(db) {
     }
     db.prepare('UPDATE menu_items SET active = 0 WHERE id = ?').run(id);
     res.json({ ...existing, active: 0 });
+  });
+
+  router.post('/:id/image', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    if (!getMenuItem.get(id)) {
+      return res.status(404).json({ error: 'menu item not found' });
+    }
+
+    upload.single('image')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message ?? 'image upload failed' });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: 'image file is required (field name "image", jpeg/png/webp/gif, max 5MB)' });
+      }
+
+      const imageUrl = `/uploads/menu/${req.file.filename}`;
+      db.prepare('UPDATE menu_items SET image_url = ? WHERE id = ?').run(imageUrl, id);
+      res.json(withOptions(getMenuItem.get(id)));
+    });
+  });
+
+  router.post('/:id/options', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    if (!getMenuItem.get(id)) {
+      return res.status(404).json({ error: 'menu item not found' });
+    }
+    const { label } = req.body ?? {};
+    if (typeof label !== 'string' || label.trim() === '') {
+      return res.status(400).json({ error: 'label is required' });
+    }
+
+    const { n: sortOrder } = countOptionsFor.get(id);
+    insertOption.run(id, label.trim(), sortOrder);
+    res.status(201).json(withOptions(getMenuItem.get(id)));
+  });
+
+  router.delete('/:id/options/:optionId', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    const optionId = Number(req.params.optionId);
+    if (!getOption.get(optionId, id)) {
+      return res.status(404).json({ error: 'option not found' });
+    }
+    deleteOption.run(optionId);
+    res.json(withOptions(getMenuItem.get(id)));
+  });
+
+  // Upsert — re-adding an ingredient already on the recipe just updates its
+  // quantity rather than erroring, since the admin UI re-posts on edit.
+  router.post('/:id/recipe', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    if (!getMenuItem.get(id)) {
+      return res.status(404).json({ error: 'menu item not found' });
+    }
+    const { ingredient_id: ingredientId, quantity_required: quantityRequired } = req.body ?? {};
+    if (!getIngredient.get(ingredientId)) {
+      return res.status(400).json({ error: 'ingredient_id is required and must reference an active ingredient' });
+    }
+    if (typeof quantityRequired !== 'number' || !Number.isFinite(quantityRequired) || quantityRequired <= 0) {
+      return res.status(400).json({ error: 'quantity_required must be a positive number' });
+    }
+
+    if (getRecipeLine.get(id, ingredientId)) {
+      updateRecipeLine.run(quantityRequired, id, ingredientId);
+    } else {
+      insertRecipeLine.run(id, ingredientId, quantityRequired);
+    }
+    res.status(201).json(withOptions(getMenuItem.get(id)));
+  });
+
+  router.delete('/:id/recipe/:ingredientId', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    const ingredientId = Number(req.params.ingredientId);
+    if (!getRecipeLine.get(id, ingredientId)) {
+      return res.status(404).json({ error: 'recipe line not found' });
+    }
+    deleteRecipeLine.run(id, ingredientId);
+    res.json(withOptions(getMenuItem.get(id)));
   });
 
   return router;

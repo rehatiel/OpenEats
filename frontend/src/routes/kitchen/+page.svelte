@@ -46,6 +46,7 @@
       orderId: String(order.id),
       type: order.type,
       table: order.table_identifier ?? undefined,
+      customerName: order.customer_name ?? undefined,
       server: order.server_name ?? undefined,
       status: displayStatus,
       elapsed: elapsedLabel(order.timestamp, tick),

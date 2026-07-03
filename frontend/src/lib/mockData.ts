@@ -6,6 +6,11 @@
 
 export type OrderType = 'dine_in' | 'to_go' | 'delivery';
 
+export interface MenuItemOption {
+  id: number;
+  label: string;
+}
+
 export interface MockMenuItem {
   id: number;
   name: string;
@@ -13,6 +18,8 @@ export interface MockMenuItem {
   // /admin/menu, so categories aren't a closed set.
   category: string;
   retail_price: number;
+  image_url?: string | null;
+  options?: MenuItemOption[];
 }
 
 export const MENU_ITEMS: MockMenuItem[] = [
@@ -46,11 +53,18 @@ export interface CartLine {
   unit_price: number;
   quantity: number;
   note?: string;
+  // Carried from the menu item at add-to-cart time so the cart's "Customize"
+  // sheet can render this line's quick-customization chips without needing
+  // the full menu list threaded down to it.
+  options?: MenuItemOption[];
 }
 
 // ---- Table management ----
 
-export type TableStatus = 'open' | 'occupied' | 'needs_bill' | 'ready';
+// 'ordered' (kitchen hasn't started) and 'cooking' (in progress) are surfaced
+// separately so the floor plan shows kitchen progress at a glance, not just
+// an undifferentiated "occupied".
+export type TableStatus = 'open' | 'ordered' | 'cooking' | 'ready' | 'needs_bill';
 
 // Deliberately lighter than CartLine (no menu_item_id) — a table's displayed
 // order is a read-only combined view across possibly several real backend
@@ -70,6 +84,10 @@ export interface MockTable {
   total?: number;
   shape?: 'square' | 'round';
   order?: TableOrderLine[];
+  // false marks a floor landmark (e.g. a service window) rather than a real
+  // orderable table — rendered as a plain label pill and excluded from
+  // Order Entry's table picker. Absent/true means a normal table.
+  orderable?: boolean;
 }
 
 // ---- Kitchen Display System ----
@@ -86,6 +104,7 @@ export interface MockTicket {
   orderId: string;
   type: OrderType;
   table?: string;
+  customerName?: string;
   server?: string;
   status: TicketStatus;
   elapsed: string;
@@ -122,19 +141,6 @@ export const DASHBOARD_WEEK: DashboardDay[] = [
   { label: 'We', salesPct: 70, foodCostPct: 23 },
 ];
 
-export interface LowStockItem {
-  name: string;
-  remaining: string;
-  runway: string;
-  fillPct: number;
-  level: 'red' | 'amber';
-}
-
-export const LOW_STOCK: LowStockItem[] = [
-  { name: 'Corn tortillas', remaining: '2.5kg left', runway: '~1 service', fillPct: 14, level: 'red' },
-  { name: 'Barbacoa braised', remaining: '3.1kg left', runway: '~2 services', fillPct: 26, level: 'amber' },
-  { name: 'Limes', remaining: '1 case left', runway: '~2 services', fillPct: 30, level: 'amber' },
-];
 
 export interface MarginRow {
   name: string;

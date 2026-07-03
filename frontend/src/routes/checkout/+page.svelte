@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { settings } from '$lib/stores/settings';
@@ -8,22 +9,61 @@
   import type { OrderRow } from '$lib/orders';
   import TypeBadge from '$lib/components/TypeBadge.svelte';
   import Keypad from '$lib/components/Keypad.svelte';
+  import Receipt from '$lib/components/Receipt.svelte';
+  import SplitBill from '$lib/components/SplitBill.svelte';
 
-  // Which table this checkout is for — every unpaid order for that table
-  // (one per "send to kitchen" round) is fetched and paid off together as
-  // one tab, so completing it actually clears the real due amount.
+  // Checkout is reached two ways: a table (?table=, every unpaid "send to
+  // kitchen" round for that table paid off together as one tab) or a single
+  // to-go/delivery order (?order=, which has no table — routed here from
+  // /pickup instead).
   $: tableParam = $page.url.searchParams.get('table');
+  $: orderParam = $page.url.searchParams.get('order');
 
   let orders: OrderRow[] = [];
   let loading = true;
   let loadError = '';
   let completing = false;
   let completeError = '';
+  // Set once payment succeeds — swaps the tender panel for a confirmation +
+  // print-receipt view instead of navigating away immediately, so there's a
+  // chance to print before leaving the screen.
+  let completed = false;
+  let completedAt = '';
+  // Prints a pre-payment bill without waiting for `completed` — the Receipt
+  // stays mounted (invisible except under @media print) once requested.
+  let billRequested = false;
+  // Sum of guest_payments already recorded toward this table's currently
+  // unpaid orders — e.g. from an earlier split-bill session that didn't
+  // finish, or a resumed page. Never applies to a single to-go/delivery order.
+  let alreadyCollected = 0;
+  // Drives how many seat columns Split Bill starts with — a 10-seat bar and
+  // a 2-top both split "by who's sitting where" using the same seat count
+  // already configured for the table, rather than a generic guest counter.
+  let tableSeats = 2;
+
+  const typeLabel: Record<string, string> = { dine_in: 'Dine In', to_go: 'To Go', delivery: 'Delivery' };
 
   async function loadOrders() {
+    if (orderParam) {
+      loading = true;
+      try {
+        const order = await apiJson<OrderRow>(`/api/orders/${orderParam}`);
+        // Already settled (e.g. a stale link) — nothing left to charge.
+        orders = order.payment_status === 'unpaid' ? [order] : [];
+        loadError = '';
+      } catch (e) {
+        loadError = e instanceof Error ? e.message : 'Failed to load this order';
+        orders = [];
+      } finally {
+        loading = false;
+      }
+      alreadyCollected = 0;
+      return;
+    }
     if (!tableParam) {
       orders = [];
       loading = false;
+      alreadyCollected = 0;
       return;
     }
     loading = true;
@@ -37,12 +77,36 @@
     } finally {
       loading = false;
     }
+
+    try {
+      const currentIds = new Set(orders.map((o) => o.id));
+      const payments = await apiJson<{ order_ids: number[]; total: number }[]>(
+        `/api/guest-payments?table_identifier=${encodeURIComponent(tableParam)}`
+      );
+      alreadyCollected = payments
+        .filter((p) => p.order_ids.some((id) => currentIds.has(id)))
+        .reduce((sum, p) => sum + p.total, 0);
+    } catch {
+      alreadyCollected = 0;
+    }
+
+    try {
+      const layout = await apiJson<{ label: string; seats: number }[]>('/api/tables');
+      tableSeats = layout.find((t) => t.label === tableParam)?.seats ?? 2;
+    } catch {
+      tableSeats = 2;
+    }
   }
 
-  $: tableParam, loadOrders();
+  $: tableParam, orderParam, loadOrders();
 
   $: cartLines = combineOrderLines(orders);
-  $: orderLabel = tableParam ? `Dine In · Table ${tableParam}` : 'Checkout';
+  $: orderType = orders[0]?.type ?? 'dine_in';
+  $: orderLabel = tableParam
+    ? `Dine In · Table ${tableParam}`
+    : orders[0]
+      ? `${typeLabel[orders[0].type]} · ${orders[0].customer_name ?? `#${orders[0].id}`}`
+      : 'Checkout';
   $: orderIdLabel = orders.length ? orders.map((o) => `#${o.id}`).join(', ') : '';
 
   $: totals = {
@@ -51,15 +115,26 @@
     total: orders.reduce((sum, o) => sum + o.total, 0),
   };
 
+  // What the plain Tender button actually needs to collect — the full total
+  // minus anything a split-bill session has already charged toward this
+  // table, so it can never double-charge on top of collected guest payments.
+  $: owed = Math.max(0, totals.total - alreadyCollected);
+
   let tenderType: 'cash' | 'card' | 'split' = 'cash';
   let entry = '';
 
-  $: tendered = entry ? Number(entry) : Math.ceil(totals.total / 10) * 10 + 10; // defaults to the $40 quick-cash suggestion
-  $: changeDue = Math.max(0, tendered - totals.total);
-  $: canComplete = orders.length > 0 && tendered >= totals.total;
+  $: tenderTabs = [
+    { key: 'cash' as const, label: 'Cash' },
+    { key: 'card' as const, label: 'Card' },
+    ...(tableParam ? [{ key: 'split' as const, label: 'Split' }] : []),
+  ];
 
-  $: base10 = Math.ceil(totals.total / 10) * 10;
-  $: quickCash = [Math.ceil(totals.total), Math.ceil(totals.total / 5) * 5, base10 + 10, base10 + 20];
+  $: tendered = entry ? Number(entry) : Math.ceil(owed / 10) * 10 + 10; // defaults to the $40 quick-cash suggestion
+  $: changeDue = Math.max(0, tendered - owed);
+  $: canComplete = orders.length > 0 && tendered >= owed;
+
+  $: base10 = Math.ceil(owed / 10) * 10;
+  $: quickCash = [Math.ceil(owed), Math.ceil(owed / 5) * 5, base10 + 10, base10 + 20];
 
   function pressKey(k: string) {
     if (k === '⌫') {
@@ -71,20 +146,79 @@
   }
 
   async function complete() {
-    if (!canComplete || !tableParam || completing) return;
+    if (!canComplete || completing || (!tableParam && !orderParam)) return;
     completing = true;
     completeError = '';
     try {
-      await apiJson('/api/orders/pay-table', {
-        method: 'PATCH',
-        body: JSON.stringify({ table_identifier: tableParam }),
-      });
-      goto('/tables');
+      if (orderParam) {
+        await apiJson(`/api/orders/${orderParam}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ payment_status: 'paid' }),
+        });
+      } else {
+        // Charges exactly `owed` (the full total minus anything already
+        // collected via a split-bill session), through the same endpoint
+        // split payments use — there's only ever one place that decides a
+        // table's tab is fully paid.
+        const scale = totals.total > 0 ? owed / totals.total : 0;
+        const res = await apiJson<{ settled: boolean }>('/api/guest-payments', {
+          method: 'POST',
+          body: JSON.stringify({
+            table_identifier: tableParam,
+            order_ids: orders.map((o) => o.id),
+            guest_label: 'Table',
+            subtotal: totals.subtotal * scale,
+            tax: totals.tax * scale,
+            total: owed,
+            tender_type: tenderType,
+            tendered_amount: tendered,
+            items_summary: cartLines.map((l) => ({ name: l.name, quantity: l.quantity, share: 1, line_total: l.unit_price * l.quantity })),
+          }),
+        });
+        if (!res.settled) {
+          // Only possible if another payment landed for this table between
+          // load and now (e.g. a second register) — refresh instead of
+          // showing a false "complete".
+          completeError = 'This payment was recorded, but the table isn’t fully settled yet — reloading.';
+          await loadOrders();
+          return;
+        }
+      }
+      // Stay on this screen with a receipt-ready confirmation instead of
+      // navigating away immediately — `orders`/`cartLines`/`totals` are left
+      // as-is (already loaded) so the receipt has real data to print.
+      completedAt = new Date().toISOString();
+      completed = true;
     } catch (e) {
       completeError = e instanceof Error ? e.message : 'Failed to complete checkout';
     } finally {
       completing = false;
     }
+  }
+
+  function handleSplitSettled() {
+    completedAt = new Date().toISOString();
+    completed = true;
+  }
+
+  async function printBill() {
+    if (tableParam) {
+      try {
+        await apiJson('/api/orders/mark-bill-printed', {
+          method: 'PATCH',
+          body: JSON.stringify({ table_identifier: tableParam }),
+        });
+      } catch {
+        // Printing still proceeds even if the Register flag couldn't be set.
+      }
+    }
+    billRequested = true;
+    await tick();
+    window.print();
+  }
+
+  function finishUp() {
+    goto(orderParam ? '/pickup' : '/tables');
   }
 </script>
 
@@ -97,14 +231,14 @@
   <div class="flex min-w-0 flex-1 flex-col">
     <div class="flex h-16 flex-none items-center gap-4 border-b border-counter-line bg-white px-4 sm:px-5">
       <button
-        class="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-counter-paper text-lg font-bold text-counter-ink"
-        on:click={() => goto('/tables')}
+        class="flex h-11 w-11 flex-none items-center justify-center rounded-lg bg-counter-paper text-lg font-bold text-counter-ink"
+        on:click={() => goto(orderParam ? '/pickup' : '/tables')}
         aria-label="Back"
       >
         ←
       </button>
       <div class="text-lg font-extrabold text-counter-ink">Checkout</div>
-      <TypeBadge type="dine_in" label={orderLabel} />
+      <TypeBadge type={orderType} label={orderLabel} />
       <div class="flex-1"></div>
       {#if orderIdLabel}
         <div class="font-mono text-sm text-counter-muted">{orderIdLabel}</div>
@@ -135,7 +269,7 @@
         <div class="px-2 py-10 text-center text-sm text-counter-muted">Loading order…</div>
       {:else if cartLines.length === 0}
         <div class="px-2 py-10 text-center text-sm text-counter-muted">
-          No open orders for this table — nothing to charge.
+          {orderParam ? 'This order has already been charged.' : 'No open orders for this table — nothing to charge.'}
         </div>
       {:else}
         {#each cartLines as line}
@@ -167,59 +301,120 @@
       <div class="mt-3 flex justify-between border-t border-dashed border-counter-dashed pt-3 text-[28px] font-black text-counter-ink">
         <span>Total</span><span class="font-mono">${totals.total.toFixed(2)}</span>
       </div>
+      {#if alreadyCollected > 0}
+        <div class="mt-1.5 flex justify-between text-xs font-semibold text-counter-muted-2">
+          <span>Already collected</span><span class="font-mono">-${alreadyCollected.toFixed(2)}</span>
+        </div>
+        <div class="flex justify-between text-xs font-bold text-counter-orange-dark">
+          <span>Remaining</span><span class="font-mono">${owed.toFixed(2)}</span>
+        </div>
+      {/if}
     </div>
   </div>
 
   <!-- tender panel -->
   <div class="flex flex-none flex-col gap-4 border-t border-counter-line bg-white p-5 lg:w-[452px] lg:border-l lg:border-t-0">
-    <div class="grid grid-cols-3 gap-2">
-      {#each [{ key: 'cash', label: 'Cash' }, { key: 'card', label: 'Card' }, { key: 'split', label: 'Split' }] as t (t.key)}
+    {#if completed}
+      <div class="flex flex-1 flex-col items-center justify-center gap-5 py-8 text-center">
+        <div class="text-2xl font-extrabold text-counter-paid">Payment complete ✓</div>
+        <div class="font-mono text-sm text-counter-muted">Total charged: ${totals.total.toFixed(2)}</div>
         <button
-          class="h-14 rounded-xl text-[15px] font-bold {tenderType === t.key
-            ? 'bg-counter-ink text-white'
-            : 'bg-counter-paper text-counter-muted-2'}"
-          on:click={() => (tenderType = t.key)}
+          class="h-[68px] w-full rounded-xl bg-counter-ink text-lg font-extrabold text-white"
+          on:click={() => window.print()}
         >
-          {t.label}
+          Print Receipt →
         </button>
-      {/each}
-    </div>
-
-    <div class="rounded-xl border border-[#E7E0D1] bg-counter-cream p-4">
-      <div class="flex items-baseline justify-between">
-        <span class="text-sm font-semibold text-counter-muted">Tendered</span>
-        <span class="font-mono text-[28px] font-extrabold text-counter-ink">${tendered.toFixed(2)}</span>
-      </div>
-      <div class="my-2 border-t border-dashed border-counter-dashed"></div>
-      <div class="flex items-baseline justify-between">
-        <span class="text-sm font-semibold text-counter-paid">Change due</span>
-        <span class="font-mono text-[28px] font-extrabold text-counter-paid">${changeDue.toFixed(2)}</span>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-4 gap-2">
-      {#each quickCash as amt}
         <button
-          class="h-11 rounded-lg text-sm font-bold {!entry && tendered === amt
-            ? 'bg-counter-ink text-white'
-            : 'bg-counter-paper text-counter-ink'}"
-          on:click={() => {
-            entry = String(amt);
-          }}
+          class="h-14 w-full rounded-xl bg-counter-paper text-[15px] font-bold text-counter-ink"
+          on:click={finishUp}
         >
-          ${amt}
+          Done
         </button>
-      {/each}
-    </div>
+      </div>
+    {:else}
+      <button
+        class="h-11 flex-none rounded-lg border border-counter-line text-sm font-bold text-counter-ink disabled:opacity-40"
+        disabled={cartLines.length === 0}
+        on:click={printBill}
+      >
+        Print Bill →
+      </button>
 
-    <Keypad on:press={(e) => pressKey(e.detail)} />
+      <div class="grid gap-2 {tableParam ? 'grid-cols-3' : 'grid-cols-2'}">
+        {#each tenderTabs as t (t.key)}
+          <button
+            class="h-14 rounded-xl text-[15px] font-bold {tenderType === t.key
+              ? 'bg-counter-ink text-white'
+              : 'bg-counter-paper text-counter-muted-2'}"
+            on:click={() => (tenderType = t.key)}
+          >
+            {t.label}
+          </button>
+        {/each}
+      </div>
 
-    <button
-      class="h-[68px] rounded-xl bg-counter-paid text-lg font-extrabold text-white shadow-[0_3px_0_#0F5D3F] disabled:opacity-50"
-      disabled={!canComplete || completing}
-      on:click={complete}
-    >
-      {completing ? 'Completing…' : `Tender $${tendered.toFixed(2)} · Complete`}
-    </button>
+      {#if tenderType === 'split' && tableParam}
+        <SplitBill
+          tableIdentifier={tableParam}
+          orderIds={orders.map((o) => o.id)}
+          {cartLines}
+          taxRate={$settings.tax_rate}
+          tableTotal={totals.total}
+          {alreadyCollected}
+          {tableSeats}
+          on:settled={handleSplitSettled}
+        />
+      {:else}
+        <div class="rounded-xl border border-[#E7E0D1] bg-counter-cream p-4">
+          <div class="flex items-baseline justify-between">
+            <span class="text-sm font-semibold text-counter-muted">Tendered</span>
+            <span class="font-mono text-[28px] font-extrabold text-counter-ink">${tendered.toFixed(2)}</span>
+          </div>
+          <div class="my-2 border-t border-dashed border-counter-dashed"></div>
+          <div class="flex items-baseline justify-between">
+            <span class="text-sm font-semibold text-counter-paid">Change due</span>
+            <span class="font-mono text-[28px] font-extrabold text-counter-paid">${changeDue.toFixed(2)}</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-4 gap-2">
+          {#each quickCash as amt}
+            <button
+              class="h-11 rounded-lg text-sm font-bold {!entry && tendered === amt
+                ? 'bg-counter-ink text-white'
+                : 'bg-counter-paper text-counter-ink'}"
+              on:click={() => {
+                entry = String(amt);
+              }}
+            >
+              ${amt}
+            </button>
+          {/each}
+        </div>
+
+        <Keypad on:press={(e) => pressKey(e.detail)} />
+
+        <button
+          class="h-[68px] rounded-xl bg-counter-paid text-lg font-extrabold text-white shadow-[0_3px_0_#0F5D3F] disabled:opacity-50"
+          disabled={!canComplete || completing}
+          on:click={complete}
+        >
+          {completing ? 'Completing…' : `Tender $${tendered.toFixed(2)} · Complete`}
+        </button>
+      {/if}
+    {/if}
   </div>
 </div>
+
+{#if completed || billRequested}
+  <Receipt
+    restaurantName={$settings.restaurant_name}
+    {orderLabel}
+    orderIds={orderIdLabel}
+    lines={cartLines}
+    totals={completed ? totals : { subtotal: totals.subtotal, tax: totals.tax, total: owed }}
+    taxRate={$settings.tax_rate}
+    timestamp={completedAt || new Date().toISOString()}
+    settled={completed}
+  />
+{/if}

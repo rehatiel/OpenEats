@@ -1,10 +1,17 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
+const SERVICE_TYPE_KEYS = ['service_dine_in', 'service_to_go', 'service_delivery'];
+
+const boolString = (v) => typeof v === 'string' && (v === '0' || v === '1');
+
 const VALIDATORS = {
   tax_rate: (v) => typeof v === 'string' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 1,
   restaurant_name: (v) => typeof v === 'string' && v.trim() !== '',
   idle_timeout_minutes: (v) => typeof v === 'string' && Number.isInteger(Number(v)) && Number(v) > 0,
+  service_dine_in: boolString,
+  service_to_go: boolString,
+  service_delivery: boolString,
 };
 
 function createSettingsRouter(db) {
@@ -32,6 +39,19 @@ function createSettingsRouter(db) {
       }
       if (!validate(String(value))) {
         return res.status(400).json({ error: `invalid value for ${key}` });
+      }
+    }
+
+    // A business must always support at least one order type — merge the
+    // incoming change with whatever's already stored before checking, since
+    // an update might only touch one of the three keys.
+    if (SERVICE_TYPE_KEYS.some((key) => key in updates)) {
+      const current = toObject();
+      const stillEnabled = SERVICE_TYPE_KEYS.some((key) =>
+        key in updates ? String(updates[key]) === '1' : current[key] !== '0'
+      );
+      if (!stillEnabled) {
+        return res.status(400).json({ error: 'at least one service type must remain enabled' });
       }
     }
 

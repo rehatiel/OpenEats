@@ -19,11 +19,48 @@ function initDb(dbPath) {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS ingredients (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      unit          TEXT NOT NULL,
-      current_stock REAL NOT NULL DEFAULT 0,
-      unit_cost     REAL NOT NULL DEFAULT 0
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      name              TEXT NOT NULL,
+      unit              TEXT NOT NULL,
+      current_stock     REAL NOT NULL DEFAULT 0,
+      unit_cost         REAL NOT NULL DEFAULT 0,
+      reorder_threshold REAL NOT NULL DEFAULT 0,
+      reorder_quantity  REAL NOT NULL DEFAULT 0,
+      active            INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS vendors (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      name         TEXT NOT NULL,
+      contact_name TEXT,
+      phone        TEXT,
+      email        TEXT,
+      notes        TEXT,
+      active       INTEGER NOT NULL DEFAULT 1
+    );
+
+    -- status='ordered' as soon as it's placed with the vendor; 'received' once
+    -- stock has actually arrived, at which point ingredient stock/cost update
+    -- (see purchaseOrders.js). No 'draft' stage — mirrors how orders here are
+    -- created complete rather than built up incrementally.
+    CREATE TABLE IF NOT EXISTS purchase_orders (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      vendor_id        INTEGER NOT NULL REFERENCES vendors(id),
+      order_number     TEXT,
+      status           TEXT NOT NULL DEFAULT 'ordered' CHECK (status IN ('ordered', 'received', 'cancelled')),
+      tracking_number  TEXT,
+      notes            TEXT,
+      created_at       TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      ordered_at       TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      received_at      TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS purchase_order_items (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id),
+      ingredient_id     INTEGER NOT NULL REFERENCES ingredients(id),
+      quantity          REAL NOT NULL,
+      unit_price_paid   REAL NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS menu_items (
@@ -31,7 +68,17 @@ function initDb(dbPath) {
       name          TEXT NOT NULL,
       retail_price  REAL NOT NULL,
       category      TEXT,
-      active        INTEGER NOT NULL DEFAULT 1
+      active        INTEGER NOT NULL DEFAULT 1,
+      image_url     TEXT
+    );
+
+    -- Admin-defined quick customizations for a menu item (e.g. "no pickles"),
+    -- surfaced as one-tap chips at order time instead of free-text only.
+    CREATE TABLE IF NOT EXISTS menu_item_options (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      menu_item_id  INTEGER NOT NULL REFERENCES menu_items(id),
+      label         TEXT NOT NULL,
+      sort_order    INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS recipe_items (
@@ -53,6 +100,7 @@ function initDb(dbPath) {
       id                   INTEGER PRIMARY KEY AUTOINCREMENT,
       type                 TEXT NOT NULL CHECK (type IN ('dine_in', 'to_go', 'delivery')),
       table_identifier     TEXT,
+      customer_name        TEXT,
       server_name          TEXT,
       kitchen_status       TEXT NOT NULL DEFAULT 'new' CHECK (kitchen_status IN ('new', 'cooking', 'ready', 'completed')),
       payment_status       TEXT NOT NULL DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'paid')),
@@ -86,7 +134,11 @@ function initDb(dbPath) {
 
     -- Table-layout configuration only (position/size/seats). Live occupancy
     -- status for the floor plan is derived at read time from orders rows
-    -- referencing a table's label, not stored here.
+    -- referencing a table's label, not stored here. orderable=0 marks a row
+    -- as a floor landmark (e.g. a service window) rather than a real table —
+    -- excluded from Order Entry's table picker and rendered as a plain label
+    -- pill instead of a status tile, but still positioned/resized through the
+    -- same admin layout editor as every other row.
     CREATE TABLE IF NOT EXISTS tables (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       label      TEXT NOT NULL,
@@ -97,18 +149,60 @@ function initDb(dbPath) {
       width      INTEGER NOT NULL DEFAULT 112,
       height     INTEGER NOT NULL DEFAULT 112,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      active     INTEGER NOT NULL DEFAULT 1
+      active     INTEGER NOT NULL DEFAULT 1,
+      orderable  INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- One row per payment collected toward a table's tab — whether that's
+    -- the whole table paid at once (guest_label = 'Table') or one guest's
+    -- share of a split bill. order_ids (not just table_identifier) is what
+    -- "already collected" is computed from, so a table label reused on a
+    -- later visit doesn't pick up stale payments from a prior, already-paid
+    -- visit. items_summary is a JSON snapshot for reprinting this payment's
+    -- receipt later, independent of whatever the live order_items say now.
+    CREATE TABLE IF NOT EXISTS guest_payments (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_identifier TEXT NOT NULL,
+      order_ids        TEXT NOT NULL,
+      guest_label      TEXT NOT NULL,
+      subtotal         REAL NOT NULL,
+      tax              REAL NOT NULL,
+      total            REAL NOT NULL,
+      tender_type      TEXT NOT NULL CHECK (tender_type IN ('cash', 'card', 'split')),
+      tendered_amount  REAL NOT NULL,
+      items_summary    TEXT NOT NULL,
+      paid_at          TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
   `);
+
+  // CREATE TABLE IF NOT EXISTS above only applies schema to a brand-new
+  // database file — an already-existing volume from a prior deploy needs
+  // these columns added explicitly.
+  ensureColumn(db, 'menu_items', 'image_url', 'TEXT');
+  ensureColumn(db, 'orders', 'customer_name', 'TEXT');
+  ensureColumn(db, 'tables', 'orderable', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'ingredients', 'reorder_threshold', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'ingredients', 'reorder_quantity', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'ingredients', 'active', 'INTEGER NOT NULL DEFAULT 1');
+  // Stamped when "Print Bill" is used pre-payment — feeds the Register queue
+  // so staff can see which tables have already been given their check.
+  ensureColumn(db, 'orders', 'bill_printed_at', 'TEXT');
 
   seedDefaults(db);
 
   return db;
+}
+
+function ensureColumn(db, table, column, ddl) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
 }
 
 // Idempotent first-run seed, guarded by row-count checks so it's a no-op on
@@ -131,6 +225,12 @@ function seedDefaults(db) {
     tax_rate: String(process.env.TAX_RATE ?? '0.0825'),
     restaurant_name: 'El Camión',
     idle_timeout_minutes: '15',
+    // Lets a business without dine-in seating (e.g. a food truck) turn that
+    // order type off entirely; at least one must stay enabled (enforced in
+    // the settings route, not here — this is just the first-boot default).
+    service_dine_in: '1',
+    service_to_go: '1',
+    service_delivery: '1',
   };
   const insertSettingIfMissing = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [key, value] of Object.entries(settingDefaults)) {
@@ -153,8 +253,8 @@ function seedDefaults(db) {
       { label: '11', seats: 4, shape: 'square' },
     ];
     const insertTable = db.prepare(`
-      INSERT INTO tables (label, seats, shape, pos_x, pos_y, width, height, sort_order, active)
-      VALUES (@label, @seats, @shape, @pos_x, @pos_y, @width, @height, @sort_order, 1)
+      INSERT INTO tables (label, seats, shape, pos_x, pos_y, width, height, sort_order, active, orderable)
+      VALUES (@label, @seats, @shape, @pos_x, @pos_y, @width, @height, @sort_order, 1, @orderable)
     `);
     seedTables.forEach((t, i) => {
       const size = t.shape === 'round' ? 150 : 112;
@@ -165,7 +265,34 @@ function seedDefaults(db) {
         sort_order: i,
         pos_x: 48 + (i % 5) * 180,
         pos_y: 48 + Math.floor(i / 5) * 180,
+        orderable: 1,
       });
+    });
+
+    // Real, admin-configurable rows for what used to be hardcoded floor-plan
+    // decoration — the bar takes orders like any table, the service window
+    // is a positioned landmark only (orderable: 0).
+    insertTable.run({
+      label: 'Bar',
+      seats: 4,
+      shape: 'square',
+      pos_x: 948,
+      pos_y: 48,
+      width: 200,
+      height: 110,
+      sort_order: seedTables.length,
+      orderable: 1,
+    });
+    insertTable.run({
+      label: 'Service Window',
+      seats: 1,
+      shape: 'square',
+      pos_x: 420,
+      pos_y: 0,
+      width: 220,
+      height: 40,
+      sort_order: seedTables.length + 1,
+      orderable: 0,
     });
   }
 

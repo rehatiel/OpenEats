@@ -14,6 +14,9 @@
     width: number;
     height: number;
     sort_order: number;
+    // Raw wire value (0/1) — false marks a floor landmark (e.g. a service
+    // window) rather than a real orderable table.
+    orderable: number;
   }
 
   const GRID_SIZE = 48;
@@ -202,7 +205,7 @@
             on:pointerdown={(e) => onPointerDown(e, table)}
           >
             <TableTile
-              table={{ id: table.label, seats: table.seats, status: 'open', shape: table.shape }}
+              table={{ id: table.label, seats: table.seats, status: 'open', shape: table.shape, orderable: Boolean(table.orderable) }}
               width={table.width}
               height={table.height}
               selected={table.id === selectedId}
@@ -263,6 +266,31 @@
         >
           Round
         </button>
+      </div>
+
+      <div id="table-orderable-label" class="mb-1 text-xs font-bold uppercase tracking-wide text-counter-muted">
+        Orderable
+      </div>
+      <div class="mb-1 flex gap-2" role="group" aria-labelledby="table-orderable-label">
+        <button
+          class="h-11 flex-1 rounded-lg text-sm font-bold {selected.orderable
+            ? 'bg-counter-ink text-white'
+            : 'bg-counter-paper text-counter-muted-2'}"
+          on:click={() => updateSelected({ orderable: 1 })}
+        >
+          Yes — a table
+        </button>
+        <button
+          class="h-11 flex-1 rounded-lg text-sm font-bold {!selected.orderable
+            ? 'bg-counter-ink text-white'
+            : 'bg-counter-paper text-counter-muted-2'}"
+          on:click={() => updateSelected({ orderable: 0 })}
+        >
+          No — a landmark
+        </button>
+      </div>
+      <div class="mb-5 font-mono text-[11px] text-counter-faint">
+        Landmarks (like a service window) show up on the floor plan but can't be picked as an order destination.
       </div>
 
       <div class="mb-1 flex justify-between text-xs font-bold uppercase tracking-wide text-counter-muted">

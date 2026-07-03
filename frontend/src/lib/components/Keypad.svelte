@@ -38,7 +38,7 @@
       <div></div>
     {:else}
       <button
-        class="h-12 rounded-lg font-mono text-xl font-bold {k === '⌫'
+        class="h-14 rounded-lg font-mono text-xl font-bold {k === '⌫'
           ? 'bg-[#EFE4D6] text-counter-muted'
           : 'bg-counter-paper text-counter-ink'}"
         on:click={() => dispatch('press', k)}

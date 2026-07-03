@@ -7,7 +7,7 @@
 
   export let cart: CartLine[];
   export let orderType: OrderType;
-  export let tableLabel: string | null = null;
+  export let orderLabel: string | null = null;
   export let sent = false;
   export let sending = false;
 
@@ -23,21 +23,41 @@
   $: totals = { subtotal, tax: subtotal * $settings.tax_rate, total: subtotal * (1 + $settings.tax_rate) };
   $: itemCount = cart.reduce((n, l) => n + l.quantity, 0);
 
-  let editingNoteFor: number | null = null;
-  let noteDraft = '';
+  // The "Customize" sheet merges admin-defined quick-customization chips
+  // (e.g. "No pickles") with free-text notes into the one `note` string that
+  // already flows through to the KDS ticket and checkout — a chip is "on"
+  // if its label appears as an exact comma-separated segment of the note;
+  // everything else in the note is treated as free text.
+  let customizeFor: CartLine | null = null;
+  let selectedLabels = new Set<string>();
+  let freeText = '';
 
-  function startNote(line: CartLine) {
-    editingNoteFor = line.menu_item_id;
-    noteDraft = line.note ?? '';
+  function openCustomize(line: CartLine) {
+    const segments = (line.note ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const optionLabels = new Set((line.options ?? []).map((o) => o.label));
+    selectedLabels = new Set(segments.filter((s) => optionLabels.has(s)));
+    freeText = segments.filter((s) => !optionLabels.has(s)).join(', ');
+    customizeFor = line;
   }
 
-  function saveNote(id: number) {
-    dispatch('note', { id, note: noteDraft.trim() || undefined });
-    editingNoteFor = null;
+  function toggleOption(label: string) {
+    const next = new Set(selectedLabels);
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    selectedLabels = next;
   }
 
-  function focus(el: HTMLElement) {
-    el.focus();
+  function saveCustomize() {
+    if (!customizeFor) return;
+    const orderedLabels = (customizeFor.options ?? [])
+      .map((o) => o.label)
+      .filter((label) => selectedLabels.has(label));
+    const note = [...orderedLabels, freeText.trim()].filter(Boolean).join(', ');
+    dispatch('note', { id: customizeFor.menu_item_id, note: note || undefined });
+    customizeFor = null;
   }
 </script>
 
@@ -48,14 +68,14 @@
         <div class="text-lg font-extrabold text-counter-ink">Order</div>
         {#if cart.length > 0}
           <button
-            class="text-xs font-bold text-counter-muted-2 hover:text-counter-orange-dark"
+            class="rounded-lg px-2 py-1.5 text-xs font-bold text-counter-muted-2 hover:text-counter-orange-dark"
             on:click={() => dispatch('clear')}
           >
             Clear
           </button>
         {/if}
       </div>
-      <TypeBadge type={orderType} label={tableLabel ? `${orderType === 'dine_in' ? 'Dine In' : orderType} · ${tableLabel}` : undefined} />
+      <TypeBadge type={orderType} label={orderLabel ? `${orderType === 'dine_in' ? 'Dine In' : orderType} · ${orderLabel}` : undefined} />
     </div>
   </div>
 
@@ -67,37 +87,26 @@
       <div class="flex items-center gap-3 border-b border-counter-paper px-2 py-3">
         <div class="min-w-0 flex-1">
           <div class="text-base font-bold text-counter-ink">{line.name}</div>
-          {#if editingNoteFor === line.menu_item_id}
-            <input
-              use:focus
-              class="mt-1 h-8 w-full rounded border border-counter-orange bg-counter-paper px-2 font-mono text-xs text-counter-ink"
-              bind:value={noteDraft}
-              placeholder="Special instructions for the kitchen"
-              on:blur={() => saveNote(line.menu_item_id)}
-              on:keydown={(e) => e.key === 'Enter' && saveNote(line.menu_item_id)}
-            />
-          {:else}
-            <div class="font-mono text-xs text-counter-muted">
-              ${line.unit_price.toFixed(2)} ea{line.note ? ` · ${line.note}` : ''}
-              <button
-                class="ml-1 font-sans text-counter-orange-dark underline decoration-dotted"
-                on:click={() => startNote(line)}
-              >
-                {line.note ? 'edit note' : '+ note'}
-              </button>
-            </div>
-          {/if}
+          <div class="mt-0.5 font-mono text-xs text-counter-muted">
+            ${line.unit_price.toFixed(2)} ea{line.note ? ` · ${line.note}` : ''}
+          </div>
+          <button
+            class="mt-1.5 h-11 rounded-lg bg-counter-paper px-4 text-sm font-bold text-counter-ink"
+            on:click={() => openCustomize(line)}
+          >
+            Customize
+          </button>
         </div>
         <div class="flex items-center gap-1.5">
           <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg bg-counter-paper text-xl font-extrabold text-counter-ink"
+            class="flex h-11 w-11 items-center justify-center rounded-lg bg-counter-paper text-xl font-extrabold text-counter-ink"
             on:click={() => dispatch('dec', line.menu_item_id)}
           >
             −
           </button>
           <div class="w-6 text-center font-mono text-[17px] font-extrabold text-counter-ink">{line.quantity}</div>
           <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg bg-counter-paper text-xl font-extrabold text-counter-ink"
+            class="flex h-11 w-11 items-center justify-center rounded-lg bg-counter-paper text-xl font-extrabold text-counter-ink"
             on:click={() => dispatch('inc', line.menu_item_id)}
           >
             +
@@ -131,3 +140,46 @@
     </Button>
   </div>
 </div>
+
+{#if customizeFor}
+  <div
+    class="fixed inset-0 z-30 flex items-end justify-center bg-black/40 sm:items-center"
+    role="button"
+    tabindex="0"
+    aria-label="Close customize sheet"
+    on:click|self={() => (customizeFor = null)}
+    on:keydown={(e) => e.key === 'Escape' && (customizeFor = null)}
+  >
+    <div class="max-h-[85vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 sm:w-[420px] sm:rounded-2xl">
+      <div class="mb-4 flex items-center justify-between">
+        <div class="text-lg font-extrabold text-counter-ink">{customizeFor.name}</div>
+        <button class="text-sm font-bold text-counter-muted-2" on:click={() => (customizeFor = null)}>Close</button>
+      </div>
+
+      {#if customizeFor.options?.length}
+        <div class="mb-2 text-xs font-bold uppercase tracking-wide text-counter-muted">Quick customizations</div>
+        <div class="mb-4 flex flex-wrap gap-2">
+          {#each customizeFor.options as option (option.id)}
+            <button
+              class="h-11 rounded-full border-2 px-4 text-sm font-bold {selectedLabels.has(option.label)
+                ? 'border-counter-orange bg-counter-orange text-white'
+                : 'border-counter-line bg-white text-counter-ink'}"
+              on:click={() => toggleOption(option.label)}
+            >
+              {option.label}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="mb-2 text-xs font-bold uppercase tracking-wide text-counter-muted">Note for the kitchen</div>
+      <textarea
+        class="mb-4 h-24 w-full rounded-lg border border-counter-line bg-counter-paper p-3 text-[15px] text-counter-ink"
+        bind:value={freeText}
+        placeholder="Anything else the kitchen should know"
+      ></textarea>
+
+      <Button variant="primary" size="lg" fullWidth on:click={saveCustomize}>Done</Button>
+    </div>
+  </div>
+{/if}

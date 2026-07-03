@@ -19,6 +19,10 @@
     pos_y: number;
     width: number;
     height: number;
+    // Raw wire value from SQLite (0/1), same convention as `active`
+    // elsewhere — coerced to a real boolean where it's threaded into
+    // MockTable-shaped view objects below.
+    orderable: number;
   }
 
   // Layout (position, seats, shape, label) is real admin-configured data.
@@ -46,22 +50,24 @@
       pos_y: row.pos_y,
       width: row.width,
       height: row.height,
+      orderable: Boolean(row.orderable),
       order: ordersForTable ? combineOrderLines(ordersForTable) : undefined,
     };
   });
-  $: selected = (merged.find((t) => t.id === selectedId) ?? merged[0]) as (MockTable & {
+  $: orderableTables = merged.filter((t) => t.orderable);
+  $: selected = (merged.find((t) => t.id === selectedId) ?? orderableTables[0]) as (MockTable & {
     pos_x: number;
     pos_y: number;
     width: number;
     height: number;
   }) | undefined;
-  $: occupiedCount = merged.filter((t) => t.status !== 'open').length;
+  $: occupiedCount = orderableTables.filter((t) => t.status !== 'open').length;
 
   async function loadLayout() {
     try {
       layout = await apiJson<TableLayoutRow[]>('/api/tables');
       if (layout.length && !layout.some((t) => t.label === selectedId)) {
-        selectedId = layout[0].label;
+        selectedId = (layout.find((t) => t.orderable) ?? layout[0]).label;
       }
       loadError = '';
     } catch (e) {
@@ -86,12 +92,14 @@
 
   const legend: { label: string; class: string }[] = [
     { label: 'Open', class: 'bg-white border-2 border-counter-dashed' },
-    { label: 'Occupied', class: 'bg-counter-dinein' },
+    { label: 'Ordered', class: 'bg-counter-delivery' },
+    { label: 'Cooking', class: 'bg-counter-dinein' },
     { label: 'Food ready', class: 'bg-counter-paid' },
     { label: 'Needs bill', class: 'bg-counter-orange' },
   ];
 
   function select(t: MockTable) {
+    if (t.orderable === false) return; // landmarks (e.g. the service window) aren't selectable here
     selectedId = t.id;
   }
 </script>
@@ -104,7 +112,7 @@
   <!-- top bar -->
   <div class="flex h-16 flex-none items-center gap-4 border-b border-counter-line bg-white px-4 sm:px-5">
     <div class="text-lg font-extrabold text-counter-ink">Floor</div>
-    <div class="font-mono text-sm text-counter-muted">{occupiedCount} of {merged.length} occupied</div>
+    <div class="font-mono text-sm text-counter-muted">{occupiedCount} of {orderableTables.length} occupied</div>
     <div class="flex-1"></div>
     <div class="hidden items-center gap-4 text-sm font-semibold text-counter-muted-2 md:flex">
       {#each legend as l}
@@ -115,6 +123,7 @@
       {/each}
     </div>
     <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
+    <a href="/pickup" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Pickup</a>
     <a href="/dashboard" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Dashboard</a>
     {#if $auth.user?.role === 'admin'}
       <a href="/admin/users" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Admin</a>
@@ -137,11 +146,6 @@
       class="relative flex-1 overflow-auto p-6"
       style="background-color: #F2EDE3; background-image: linear-gradient(#E7E0D1 1px, transparent 1px), linear-gradient(90deg, #E7E0D1 1px, transparent 1px); background-size: 48px 48px;"
     >
-      <div class="mb-5 flex justify-center">
-        <div class="rounded bg-counter-ink px-6 py-1.5 font-mono text-[11px] font-bold tracking-[0.15em] text-[#E8DFCE]">
-          ◤ SERVICE WINDOW ◢
-        </div>
-      </div>
       {#if loading}
         <div class="text-center text-sm text-counter-muted">Loading floor plan…</div>
       {:else}
@@ -156,15 +160,6 @@
             />
           </div>
         {/each}
-        <!-- bar counter (not an order-bearing table) -->
-        <div
-          class="absolute flex h-[132px] w-[160px] flex-none flex-col items-center justify-center rounded-2xl border-2 border-counter-dashed bg-counter-tabs"
-          style="left: 948px; top: 48px;"
-        >
-          <div class="font-mono text-[11px] font-bold tracking-[0.1em] text-counter-muted">BAR</div>
-          <div class="mt-1 text-xl font-extrabold text-counter-ink">B1–B4</div>
-          <div class="mt-1 font-mono text-[11px] text-counter-faint">2 seated</div>
-        </div>
       {/if}
     </div>
 

@@ -6,6 +6,9 @@
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/menu', label: 'Menu' },
     { href: '/admin/tables', label: 'Tables' },
+    { href: '/admin/inventory', label: 'Inventory' },
+    { href: '/admin/vendors', label: 'Vendors' },
+    { href: '/admin/purchase-orders', label: 'Purchase Orders' },
     { href: '/admin/settings', label: 'Settings' },
   ];
 

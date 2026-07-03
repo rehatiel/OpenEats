@@ -7,7 +7,11 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   const token = get(auth).token;
   const headers = new Headers(opts.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (opts.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  // FormData (e.g. image uploads) must NOT get an explicit Content-Type —
+  // the browser needs to set its own multipart boundary.
+  if (opts.body && !(opts.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   const res = await fetch(path, { ...opts, headers });
 

@@ -43,7 +43,15 @@
       {/if}
     </div>
     <div class="mt-1.5 flex items-center gap-2">
-      <TypeBadge type={ticket.type} theme="kds" label={ticket.table ? `${ticket.type === 'dine_in' ? 'Dine In' : ticket.type} · T${ticket.table}` : undefined} />
+      <TypeBadge
+        type={ticket.type}
+        theme="kds"
+        label={ticket.table
+          ? `${ticket.type === 'dine_in' ? 'Dine In' : ticket.type} · T${ticket.table}`
+          : ticket.customerName
+            ? `${ticket.type === 'to_go' ? 'To Go' : 'Delivery'} · ${ticket.customerName}`
+            : undefined}
+      />
       {#if ticket.status === 'ready'}
         <span class="font-mono text-xs text-kds-ready">READY</span>
       {:else if ticket.status === 'late'}

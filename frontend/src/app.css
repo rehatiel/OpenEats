@@ -13,3 +13,20 @@
     @apply bg-counter-paper font-sans text-counter-ink antialiased;
   }
 }
+
+/* "Print only this element" — used by the checkout receipt so window.print()
+   outputs just the receipt regardless of whatever else is on screen. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #receipt-print,
+  #receipt-print * {
+    visibility: visible;
+  }
+  #receipt-print {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+}

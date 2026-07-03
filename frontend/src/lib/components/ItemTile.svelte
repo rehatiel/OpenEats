@@ -16,8 +16,13 @@
 >
   <div
     class="relative h-20 sm:h-24"
-    style="background-image: repeating-linear-gradient(45deg, #f0ece3, #f0ece3 8px, #e9e3d6 8px, #e9e3d6 16px);"
+    style={item.image_url
+      ? undefined
+      : 'background-image: repeating-linear-gradient(45deg, #f0ece3, #f0ece3 8px, #e9e3d6 8px, #e9e3d6 16px);'}
   >
+    {#if item.image_url}
+      <img src={item.image_url} alt={item.name} class="h-full w-full object-cover" />
+    {/if}
     {#if quantityInCart > 0}
       <div
         class="absolute right-2 top-2 flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-counter-orange text-sm font-extrabold text-white"

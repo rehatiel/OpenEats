@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { DASHBOARD_KPIS, DASHBOARD_WEEK, LOW_STOCK, MARGIN_TABLE } from '$lib/mockData';
+  import { DASHBOARD_KPIS, DASHBOARD_WEEK, MARGIN_TABLE } from '$lib/mockData';
+  import { apiJson } from '$lib/api';
   import { auth, logout } from '$lib/stores/auth';
+  import { settings } from '$lib/stores/settings';
   import KpiCard from '$lib/components/KpiCard.svelte';
 
   let range: 'today' | 'week' | 'month' = 'week';
@@ -12,6 +15,39 @@
   ];
 
   const fmt = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+  // The KPI row and margin table above/below this card are still the
+  // original mockup numbers — only low stock is wired to real inventory,
+  // since that's what "build restock list" actually needs.
+  interface IngredientRow {
+    id: number;
+    name: string;
+    unit: string;
+    current_stock: number;
+    reorder_threshold: number;
+  }
+  let ingredients: IngredientRow[] = [];
+  let ingredientsLoaded = false;
+
+  $: lowStock = ingredients
+    .filter((i) => i.current_stock <= i.reorder_threshold)
+    .map((i) => ({
+      name: i.name,
+      remaining: `${i.current_stock} ${i.unit} left`,
+      fillPct: i.reorder_threshold > 0 ? Math.max(4, Math.min(100, (i.current_stock / i.reorder_threshold) * 100)) : 0,
+      level: (i.current_stock <= i.reorder_threshold / 2 ? 'red' : 'amber') as 'red' | 'amber',
+    }))
+    .sort((a, b) => a.fillPct - b.fillPct);
+
+  onMount(async () => {
+    try {
+      ingredients = await apiJson<IngredientRow[]>('/api/ingredients');
+    } catch {
+      // Card falls back to its empty state below.
+    } finally {
+      ingredientsLoaded = true;
+    }
+  });
 </script>
 
 <svelte:head>
@@ -35,6 +71,9 @@
     </div>
     <div class="hidden font-mono text-sm text-counter-muted sm:block">Jun 26 – Jul 2</div>
     <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
+    {#if $settings.service_dine_in}
+      <a href="/register" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Register</a>
+    {/if}
     {#if $auth.user?.role === 'admin'}
       <a href="/admin/users" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Admin</a>
     {/if}
@@ -94,27 +133,41 @@
         <div class="mb-4 flex items-center gap-2.5">
           <div class="flex h-[22px] w-[22px] items-center justify-center rounded-md bg-[#FEF0E9] text-sm font-extrabold text-[#C2410C]">!</div>
           <div class="text-[15px] font-bold text-counter-ink">Low stock</div>
-          <span class="rounded-full bg-counter-paper px-2.5 py-0.5 text-xs font-bold text-counter-muted-2">{LOW_STOCK.length} items</span>
+          <span class="rounded-full bg-counter-paper px-2.5 py-0.5 text-xs font-bold text-counter-muted-2">{lowStock.length} items</span>
         </div>
-        <div class="space-y-3.5">
-          {#each LOW_STOCK as item}
-            <div>
-              <div class="flex items-center justify-between">
-                <div class="text-[15px] font-bold text-counter-ink">{item.name}</div>
-                <div class="h-2 w-[60px] overflow-hidden rounded-full bg-counter-paper">
-                  <div
-                    class="h-full rounded-full {item.level === 'red' ? 'bg-counter-orange' : 'bg-[#D97706]'}"
-                    style="width: {item.fillPct}%"
-                  ></div>
+        {#if ingredientsLoaded && ingredients.length === 0}
+          <div class="py-4 text-sm text-counter-muted">
+            No ingredients tracked yet — add them in Admin → Inventory to see low-stock alerts here.
+          </div>
+        {:else if lowStock.length === 0}
+          <div class="py-4 text-sm text-counter-muted">Everything's above its reorder threshold.</div>
+        {:else}
+          <div class="space-y-3.5">
+            {#each lowStock as item}
+              <div>
+                <div class="flex items-center justify-between">
+                  <div class="text-[15px] font-bold text-counter-ink">{item.name}</div>
+                  <div class="h-2 w-[60px] overflow-hidden rounded-full bg-counter-paper">
+                    <div
+                      class="h-full rounded-full {item.level === 'red' ? 'bg-counter-orange' : 'bg-[#D97706]'}"
+                      style="width: {item.fillPct}%"
+                    ></div>
+                  </div>
                 </div>
+                <div class="font-mono text-xs text-counter-muted">{item.remaining}</div>
               </div>
-              <div class="font-mono text-xs text-counter-muted">{item.remaining} · {item.runway}</div>
-            </div>
-          {/each}
-        </div>
-        <button class="mt-4 h-12 w-full rounded-lg bg-counter-paper text-sm font-bold text-counter-ink">
-          Build restock list →
-        </button>
+            {/each}
+          </div>
+        {/if}
+        {#if $auth.user?.role === 'admin'}
+          <button
+            class="mt-4 h-12 w-full rounded-lg bg-counter-paper text-sm font-bold text-counter-ink disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={lowStock.length === 0}
+            on:click={() => goto('/admin/purchase-orders?restock=1')}
+          >
+            Build restock list →
+          </button>
+        {/if}
       </div>
     </div>
 

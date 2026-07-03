@@ -1,7 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { apiJson } from '$lib/api';
+  import { apiJson, apiFetch } from '$lib/api';
   import Button from '$lib/components/Button.svelte';
+
+  interface MenuOptionRow {
+    id: number;
+    label: string;
+  }
+
+  interface RecipeLine {
+    ingredient_id: number;
+    name: string;
+    unit: string;
+    quantity_required: number;
+  }
+
+  interface IngredientRow {
+    id: number;
+    name: string;
+    unit: string;
+  }
 
   interface MenuItemRow {
     id: number;
@@ -9,6 +27,9 @@
     category: string;
     retail_price: number;
     active: number;
+    image_url: string | null;
+    options: MenuOptionRow[];
+    recipe: RecipeLine[];
   }
 
   let items: MenuItemRow[] = [];
@@ -22,6 +43,18 @@
   let formPrice = '';
   let formError = '';
   let saving = false;
+
+  let uploadingImage = false;
+  let imageError = '';
+  let newOptionLabel = '';
+  let optionError = '';
+  let savingOption = false;
+
+  let ingredients: IngredientRow[] = [];
+  let newRecipeIngredientId: number | null = null;
+  let newRecipeQuantity = '';
+  let recipeError = '';
+  let savingRecipeLine = false;
 
   $: categories = [...new Set(items.map((i) => i.category))].sort();
   $: grouped = categories.map((cat) => ({ cat, rows: items.filter((i) => i.category === cat) }));
@@ -38,7 +71,14 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    apiJson<IngredientRow[]>('/api/ingredients')
+      .then((rows) => (ingredients = rows))
+      .catch(() => {
+        // Recipe section just won't have anything to pick from.
+      });
+  });
 
   function openAdd() {
     editing = null;
@@ -46,6 +86,12 @@
     formCategory = categories[0] ?? '';
     formPrice = '';
     formError = '';
+    imageError = '';
+    optionError = '';
+    newOptionLabel = '';
+    recipeError = '';
+    newRecipeIngredientId = ingredients[0]?.id ?? null;
+    newRecipeQuantity = '';
     formOpen = true;
   }
 
@@ -55,7 +101,21 @@
     formCategory = item.category;
     formPrice = String(item.retail_price);
     formError = '';
+    imageError = '';
+    optionError = '';
+    newOptionLabel = '';
+    recipeError = '';
+    newRecipeIngredientId = ingredients[0]?.id ?? null;
+    newRecipeQuantity = '';
     formOpen = true;
+  }
+
+  // Re-pulls the full menu and re-points `editing` at the fresh copy of the
+  // item being edited, so the side panel reflects an image/option change
+  // without closing and reopening the form.
+  async function refreshEditing() {
+    await load();
+    if (editing) editing = items.find((i) => i.id === editing!.id) ?? null;
   }
 
   async function save() {
@@ -79,11 +139,15 @@
       const body = { name: formName.trim(), category: formCategory.trim(), retail_price: price };
       if (editing) {
         await apiJson(`/api/menu/${editing.id}`, { method: 'PUT', body: JSON.stringify(body) });
+        formOpen = false;
+        await load();
       } else {
-        await apiJson('/api/menu', { method: 'POST', body: JSON.stringify(body) });
+        // Stay in the form, now in edit mode, so a photo/customizations can
+        // be added right away — both require an id that doesn't exist yet.
+        const created = await apiJson<MenuItemRow>('/api/menu', { method: 'POST', body: JSON.stringify(body) });
+        await load();
+        editing = items.find((i) => i.id === created.id) ?? created;
       }
-      formOpen = false;
-      await load();
     } catch (e) {
       formError = e instanceof Error ? e.message : 'Save failed';
     } finally {
@@ -98,6 +162,94 @@
       await load();
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Delete failed';
+    }
+  }
+
+  function handleImageInput(e: Event) {
+    uploadImage((e.target as HTMLInputElement).files);
+  }
+
+  async function uploadImage(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file || !editing) return;
+    uploadingImage = true;
+    imageError = '';
+    try {
+      const form = new FormData();
+      form.append('image', file);
+      const res = await apiFetch(`/api/menu/${editing.id}/image`, { method: 'POST', body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? 'Image upload failed');
+      }
+      await refreshEditing();
+    } catch (e) {
+      imageError = e instanceof Error ? e.message : 'Image upload failed';
+    } finally {
+      uploadingImage = false;
+    }
+  }
+
+  async function addOption() {
+    if (!editing || !newOptionLabel.trim()) return;
+    savingOption = true;
+    optionError = '';
+    try {
+      await apiJson(`/api/menu/${editing.id}/options`, {
+        method: 'POST',
+        body: JSON.stringify({ label: newOptionLabel.trim() }),
+      });
+      newOptionLabel = '';
+      await refreshEditing();
+    } catch (e) {
+      optionError = e instanceof Error ? e.message : 'Failed to add customization';
+    } finally {
+      savingOption = false;
+    }
+  }
+
+  async function removeOption(option: MenuOptionRow) {
+    if (!editing) return;
+    optionError = '';
+    try {
+      await apiJson(`/api/menu/${editing.id}/options/${option.id}`, { method: 'DELETE' });
+      await refreshEditing();
+    } catch (e) {
+      optionError = e instanceof Error ? e.message : 'Failed to remove customization';
+    }
+  }
+
+  async function addRecipeLine() {
+    if (!editing || !newRecipeIngredientId) return;
+    const quantity = Number(newRecipeQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      recipeError = 'Quantity must be a positive number';
+      return;
+    }
+    savingRecipeLine = true;
+    recipeError = '';
+    try {
+      await apiJson(`/api/menu/${editing.id}/recipe`, {
+        method: 'POST',
+        body: JSON.stringify({ ingredient_id: newRecipeIngredientId, quantity_required: quantity }),
+      });
+      newRecipeQuantity = '';
+      await refreshEditing();
+    } catch (e) {
+      recipeError = e instanceof Error ? e.message : 'Failed to add recipe line';
+    } finally {
+      savingRecipeLine = false;
+    }
+  }
+
+  async function removeRecipeLine(line: RecipeLine) {
+    if (!editing) return;
+    recipeError = '';
+    try {
+      await apiJson(`/api/menu/${editing.id}/recipe/${line.ingredient_id}`, { method: 'DELETE' });
+      await refreshEditing();
+    } catch (e) {
+      recipeError = e instanceof Error ? e.message : 'Failed to remove recipe line';
     }
   }
 </script>
@@ -144,7 +296,7 @@
   </div>
 
   {#if formOpen}
-    <div class="flex w-[360px] flex-none flex-col border-l border-counter-line bg-white p-5">
+    <div class="flex w-[360px] flex-none flex-col overflow-y-auto border-l border-counter-line bg-white p-5">
       <div class="mb-4 flex items-center justify-between">
         <div class="text-lg font-extrabold text-counter-ink">{editing ? 'Edit item' : 'Add item'}</div>
         <button class="text-sm font-bold text-counter-muted-2" on:click={() => (formOpen = false)}>Close</button>
@@ -187,8 +339,124 @@
       {/if}
 
       <Button variant="success" fullWidth on:click={save} disabled={saving}>
-        {saving ? 'Saving…' : 'Save'}
+        {saving ? 'Saving…' : editing ? 'Save' : 'Save & continue'}
       </Button>
+
+      {#if editing}
+        <div class="mt-6 border-t border-counter-paper pt-5">
+          <div class="mb-2 text-xs font-bold uppercase tracking-wide text-counter-muted">Photo</div>
+          {#if editing.image_url}
+            <img src={editing.image_url} alt={editing.name} class="mb-2 h-28 w-full rounded-lg object-cover" />
+          {/if}
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            disabled={uploadingImage}
+            on:change={handleImageInput}
+          />
+          {#if uploadingImage}
+            <div class="mt-1 text-xs text-counter-muted">Uploading…</div>
+          {/if}
+          {#if imageError}
+            <div class="mt-1 text-xs font-semibold text-counter-orange-dark">{imageError}</div>
+          {/if}
+        </div>
+
+        <div class="mt-6 border-t border-counter-paper pt-5">
+          <div class="mb-2 text-xs font-bold uppercase tracking-wide text-counter-muted">Quick customizations</div>
+          <div class="mb-3 flex flex-wrap gap-2">
+            {#each editing.options as option (option.id)}
+              <span class="flex items-center gap-1.5 rounded-full bg-counter-paper px-3 py-1.5 text-sm font-semibold text-counter-ink">
+                {option.label}
+                <button
+                  class="text-counter-muted-2 hover:text-counter-orange-dark"
+                  aria-label={`Remove ${option.label}`}
+                  on:click={() => removeOption(option)}
+                >
+                  ✕
+                </button>
+              </span>
+            {/each}
+            {#if editing.options.length === 0}
+              <div class="text-sm text-counter-muted">No quick customizations yet.</div>
+            {/if}
+          </div>
+          <div class="flex gap-2">
+            <input
+              class="h-10 min-w-0 flex-1 rounded-lg border border-counter-line bg-counter-paper px-3 text-sm text-counter-ink"
+              placeholder="e.g. No pickles"
+              bind:value={newOptionLabel}
+              on:keydown={(e) => e.key === 'Enter' && addOption()}
+            />
+            <button
+              class="h-10 flex-none rounded-lg bg-counter-ink px-4 text-sm font-bold text-white disabled:opacity-50"
+              disabled={savingOption || !newOptionLabel.trim()}
+              on:click={addOption}
+            >
+              Add
+            </button>
+          </div>
+          {#if optionError}
+            <div class="mt-1 text-xs font-semibold text-counter-orange-dark">{optionError}</div>
+          {/if}
+        </div>
+
+        <div class="mt-6 border-t border-counter-paper pt-5">
+          <div class="mb-2 text-xs font-bold uppercase tracking-wide text-counter-muted">Recipe</div>
+          <div class="mb-3 space-y-1.5">
+            {#each editing.recipe as line (line.ingredient_id)}
+              <div class="flex items-center justify-between rounded-lg bg-counter-paper px-3 py-2 text-sm">
+                <span class="font-semibold text-counter-ink">{line.name}</span>
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-counter-muted-2">{line.quantity_required} {line.unit}</span>
+                  <button
+                    class="text-counter-muted-2 hover:text-counter-orange-dark"
+                    aria-label={`Remove ${line.name} from recipe`}
+                    on:click={() => removeRecipeLine(line)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            {/each}
+            {#if editing.recipe.length === 0}
+              <div class="text-sm text-counter-muted">No recipe yet — stock won't deduct when this sells until one's added.</div>
+            {/if}
+          </div>
+          {#if ingredients.length === 0}
+            <div class="text-sm text-counter-muted">Add ingredients in Admin → Inventory first.</div>
+          {:else}
+            <div class="flex gap-2">
+              <select
+                class="h-10 min-w-0 flex-1 rounded-lg border border-counter-line bg-counter-paper px-2 text-sm text-counter-ink"
+                bind:value={newRecipeIngredientId}
+              >
+                {#each ingredients as ing (ing.id)}
+                  <option value={ing.id}>{ing.name} ({ing.unit})</option>
+                {/each}
+              </select>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="Qty"
+                class="h-10 w-20 flex-none rounded-lg border border-counter-line bg-counter-paper px-2 font-mono text-sm text-counter-ink"
+                bind:value={newRecipeQuantity}
+              />
+              <button
+                class="h-10 flex-none rounded-lg bg-counter-ink px-4 text-sm font-bold text-white disabled:opacity-50"
+                disabled={savingRecipeLine || !newRecipeQuantity.trim()}
+                on:click={addRecipeLine}
+              >
+                Add
+              </button>
+            </div>
+          {/if}
+          {#if recipeError}
+            <div class="mt-1 text-xs font-semibold text-counter-orange-dark">{recipeError}</div>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
