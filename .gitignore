@@ -1,0 +1,15 @@
+node_modules/
+
+# Frontend build output
+frontend/build/
+frontend/.svelte-kit/
+
+# Backend local SQLite data (only relevant when running outside Docker)
+backend/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Environment files
+.env

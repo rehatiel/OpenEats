@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DB_PATH=/app/data/openeats.db
+      # First-boot seed only — after startup, /admin/settings is authoritative.
+      - TAX_RATE=${TAX_RATE:-0.0825}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - BOOTSTRAP_ADMIN_PIN=${BOOTSTRAP_ADMIN_PIN:-1234}
+    volumes:
+      - sqlite-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  # Named volume keeps the SQLite file alive across container rebuilds/recreation.
+  sqlite-data:
