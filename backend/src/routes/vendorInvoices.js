@@ -1,5 +1,7 @@
 const express = require('express');
+const { DateTime } = require('luxon');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { createLedgerHelper } = require('../lib/ledger');
 
 const VALID_STATUSES = ['open', 'paid'];
 
@@ -9,6 +11,18 @@ const VALID_STATUSES = ['open', 'paid'];
 // not a requirement.
 function createVendorInvoicesRouter(db) {
   const router = express.Router();
+  const { postVendorInvoiceCreated, postVendorInvoicePaid } = createLedgerHelper(db);
+
+  const getSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+  // Business-day "today" (restaurant_timezone), matching invoice_date/
+  // due_date's plain-YYYY-MM-DD convention and the ledger's entry_date
+  // semantics — NOT new Date().toISOString(), which is UTC and can land on
+  // the wrong business day near midnight, silently excluding the payment
+  // entry from a same-day Balance Sheet snapshot.
+  function todayDate() {
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    return DateTime.now().setZone(tz).toISODate();
+  }
 
   const getVendor = db.prepare('SELECT id FROM vendors WHERE id = ?');
   const getPO = db.prepare('SELECT id FROM purchase_orders WHERE id = ?');
@@ -83,7 +97,9 @@ function createVendorInvoicesRouter(db) {
       amount,
       notes: typeof notes === 'string' ? notes.trim() || null : null,
     });
-    res.status(201).json(serialize(getInvoice.get(lastInsertRowid)));
+    const invoice = getInvoice.get(lastInsertRowid);
+    postVendorInvoiceCreated(invoice);
+    res.status(201).json(serialize(invoice));
   });
 
   router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
@@ -99,7 +115,8 @@ function createVendorInvoicesRouter(db) {
     }
 
     const nextStatus = status ?? existing.status;
-    const nextPaidDate = nextStatus === 'paid' ? (existing.paid_date ?? new Date().toISOString()) : null;
+    const newlyPaid = existing.status !== 'paid' && nextStatus === 'paid';
+    const nextPaidDate = nextStatus === 'paid' ? (existing.paid_date ?? todayDate()) : null;
 
     db.prepare('UPDATE vendor_invoices SET status = ?, paid_date = ?, notes = ? WHERE id = ?').run(
       nextStatus,
@@ -107,6 +124,11 @@ function createVendorInvoicesRouter(db) {
       typeof notes === 'string' ? notes.trim() || null : existing.notes,
       id
     );
+    // Only the open -> paid transition posts a payment entry — re-saving an
+    // already-paid invoice (e.g. editing notes) must not post it twice.
+    if (newlyPaid) {
+      postVendorInvoicePaid(existing, nextPaidDate.slice(0, 10));
+    }
     res.json(serialize(getInvoice.get(id)));
   });
 

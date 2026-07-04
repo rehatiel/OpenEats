@@ -273,6 +273,57 @@ function initDb(dbPath) {
       expected_quantity REAL NOT NULL,
       variance          REAL NOT NULL
     );
+
+    -- Minimal double-entry ledger — exists ONLY to support Balance Sheet and
+    -- Cash Flow, the two reports that structurally need real point-in-time
+    -- account balances. Every other report reads its own purpose-built
+    -- subledger directly (guest_payments, order_item_adjustments, etc.) —
+    -- see backend/src/lib/ledger.js for the full design writeup (chart of
+    -- accounts, daily-close posting logic, and the deliberate
+    -- simplifications: no formal period-close, no category-level revenue
+    -- split, depreciation derived at query time rather than posted).
+    CREATE TABLE IF NOT EXISTS chart_of_accounts (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      code            TEXT NOT NULL UNIQUE,
+      name            TEXT NOT NULL,
+      type            TEXT NOT NULL CHECK (type IN ('asset', 'liability', 'equity', 'revenue', 'expense')),
+      normal_balance  TEXT NOT NULL CHECK (normal_balance IN ('debit', 'credit'))
+    );
+
+    -- One row per posted transaction. entry_date is a business day
+    -- (YYYY-MM-DD), not a timestamp — a daily-close entry summarizes a whole
+    -- day, so it has no more precise a time than that. source/source_id
+    -- trace an entry back to what caused it (a daily close has no single
+    -- triggering row, hence source_id NULL there).
+    CREATE TABLE IF NOT EXISTS journal_entries (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_date  TEXT NOT NULL,
+      source      TEXT NOT NULL CHECK (source IN ('daily_close', 'vendor_invoice', 'vendor_invoice_payment', 'capex')),
+      source_id   INTEGER,
+      memo        TEXT,
+      created_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Balance enforced in application code (see ledger.js's postEntry, which
+    -- refuses to commit an entry whose lines don't sum to zero) — SQLite has
+    -- no cross-row aggregate CHECK to enforce debits=credits at the schema
+    -- level.
+    CREATE TABLE IF NOT EXISTS journal_lines (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id   INTEGER NOT NULL REFERENCES journal_entries(id),
+      account_id INTEGER NOT NULL REFERENCES chart_of_accounts(id),
+      debit      REAL NOT NULL DEFAULT 0,
+      credit     REAL NOT NULL DEFAULT 0
+    );
+  `);
+
+  // At most one daily-close entry per business day — a partial index (rather
+  // than a plain UNIQUE column) since source_id is NULL for every daily_close
+  // row and other sources can repeat freely. Backstops the application-level
+  // "does today already have one" guard against a double-invocation race.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_entries_daily_close_date
+      ON journal_entries(entry_date) WHERE source = 'daily_close'
   `);
 
   // CREATE TABLE IF NOT EXISTS above only applies schema to a brand-new
@@ -368,6 +419,30 @@ function ensureColumn(db, table, column, ddl) {
   }
 }
 
+// The minimal chart of accounts the ledger needs — see the schema comment
+// above chart_of_accounts for why it's this short. INSERT OR IGNORE on the
+// unique `code` makes this safe to call on every boot, so a future account
+// addition just needs a new line here rather than a one-time migration.
+function seedChartOfAccounts(db) {
+  const accounts = [
+    { code: '1000', name: 'Cash and Cash Equivalents', type: 'asset', normal_balance: 'debit' },
+    { code: '1050', name: 'Accounts Receivable (Guest Checks)', type: 'asset', normal_balance: 'debit' },
+    { code: '1200', name: 'Inventory', type: 'asset', normal_balance: 'debit' },
+    { code: '1500', name: 'Fixed Assets', type: 'asset', normal_balance: 'debit' },
+    { code: '2000', name: 'Accounts Payable', type: 'liability', normal_balance: 'credit' },
+    { code: '2100', name: 'Sales Tax Payable', type: 'liability', normal_balance: 'credit' },
+    { code: '2200', name: 'Tips Payable', type: 'liability', normal_balance: 'credit' },
+    { code: '3000', name: 'Retained Earnings', type: 'equity', normal_balance: 'credit' },
+    { code: '4000', name: 'Sales Revenue', type: 'revenue', normal_balance: 'credit' },
+    { code: '5000', name: 'Cost of Goods Sold', type: 'expense', normal_balance: 'debit' },
+    { code: '5900', name: 'Operating Expenses', type: 'expense', normal_balance: 'debit' },
+  ];
+  const insert = db.prepare(
+    'INSERT INTO chart_of_accounts (code, name, type, normal_balance) VALUES (@code, @name, @type, @normal_balance) ON CONFLICT(code) DO NOTHING'
+  );
+  for (const account of accounts) insert.run(account);
+}
+
 // Idempotent first-run seed, guarded by row-count checks so it's a no-op on
 // every boot after the first.
 function seedDefaults(db) {
@@ -406,6 +481,8 @@ function seedDefaults(db) {
   for (const [key, value] of Object.entries(settingDefaults)) {
     insertSettingIfMissing.run(key, value);
   }
+
+  seedChartOfAccounts(db);
 
   const { n: tableCount } = db.prepare('SELECT COUNT(*) AS n FROM tables').get();
   if (tableCount === 0) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const { DateTime } = require('luxon');
 const { requireAuth } = require('../middleware/auth');
+const { createLedgerHelper } = require('../lib/ledger');
 
 const VALID_RANGES = ['today', 'week', 'month', 'year'];
 const TAX_CATEGORIES = ['food', 'liquor', 'wine', 'beer', 'uncategorized'];
@@ -48,6 +49,7 @@ function pctDelta(current, previous) {
 
 function createReportsRouter(db) {
   const router = express.Router();
+  const { getBalanceSheet, getCashFlow } = createLedgerHelper(db);
 
   const getSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
 
@@ -506,6 +508,28 @@ function createReportsRouter(db) {
       prior: { grossSales: prior.grossSales, orders: prior.orders, avgTicket: prior.orders > 0 ? prior.grossSales / prior.orders : 0 },
       grossSalesDeltaPct: pctDelta(current.grossSales, prior.grossSales),
     });
+  });
+
+  // Balance Sheet — the only report backed by the general ledger (see
+  // lib/ledger.js). Backfills any missing daily-close entries up through
+  // the requested date on demand, so this never needs a separate "close the
+  // books" admin action or cron job.
+  router.get('/balance-sheet', requireAuth, (req, res) => {
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const date = typeof req.query.date === 'string' && req.query.date.trim() !== '' ? req.query.date : DateTime.now().setZone(tz).toISODate();
+    if (!DateTime.fromISO(date).isValid) {
+      return res.status(400).json({ error: 'date must be a valid YYYY-MM-DD date' });
+    }
+    res.json(getBalanceSheet(date));
+  });
+
+  // Statement of Cash Flows — also ledger-backed. `range` picks a calendar
+  // window ending today, matching the convention every other report uses.
+  router.get('/cash-flow', requireAuth, (req, res) => {
+    const rangeKey = ['month', 'year'].includes(req.query.range) ? req.query.range : 'month';
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const { start, end } = resolveRange(rangeKey, tz);
+    res.json(getCashFlow(start.toISODate(), end.toISODate()));
   });
 
   return router;

@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { createLedgerHelper } = require('../lib/ledger');
 
 // Long-lived asset purchases (kitchen equipment, renovations, software
 // platforms) — a simple append-only log for now (no edit/delete, matching
@@ -8,6 +9,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 // Sheet.
 function createCapexRouter(db) {
   const router = express.Router();
+  const { postCapexCreated } = createLedgerHelper(db);
 
   const getVendor = db.prepare('SELECT id FROM vendors WHERE id = ?');
   const insertItem = db.prepare(`
@@ -70,7 +72,9 @@ function createCapexRouter(db) {
       useful_life_months: usefulLifeMonths ?? null,
       notes: typeof notes === 'string' ? notes.trim() || null : null,
     });
-    res.status(201).json(getItem.get(lastInsertRowid));
+    const item = getItem.get(lastInsertRowid);
+    postCapexCreated(item);
+    res.status(201).json(item);
   });
 
   return router;
