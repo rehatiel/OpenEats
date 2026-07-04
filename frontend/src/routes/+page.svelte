@@ -124,7 +124,7 @@
     ...($settings.service_to_go || $settings.service_delivery ? [{ href: '/pickup', label: 'Pickup' }] : []),
     { href: '/punch', label: 'Time Clock' },
     ...($auth.user?.role !== 'staff' ? [{ href: '/dashboard', label: 'Dashboard' }] : []),
-    { href: '/kitchen', label: 'Kitchen ↗' },
+    ...($settings.kitchen_display_enabled ? [{ href: '/kitchen', label: 'Kitchen ↗' }] : []),
     ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
     ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),
   ];

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CombinedLine } from '$lib/orders';
+  import { roundCents } from '$lib/orders';
 
   export let restaurantName: string;
   export let orderLabel: string;
@@ -18,8 +19,14 @@
   export let settled = true;
   export let tipAmount = 0;
   export let cardFee = 0;
+  // Only relevant on a pre-payment bill (settled=false) — the tender isn't
+  // chosen yet, so instead of guessing which fee applies, show both amounts
+  // and let the guest see the cash/card difference before they decide.
+  export let ccFeePercent = 0;
   export let paidMessage = 'Thank you!';
   export let billMessage = 'Please pay at the counter';
+
+  $: cardTotal = roundCents(totals.total * (1 + ccFeePercent));
 </script>
 
 <!--
@@ -57,9 +64,18 @@
   {#if tipAmount > 0}
     <div class="flex justify-between"><span>Tip</span><span>${tipAmount.toFixed(2)}</span></div>
   {/if}
-  <div class="mt-1 flex justify-between text-base font-extrabold">
-    <span>{settled ? 'Total' : 'Amount Due'}</span><span>${(totals.total + cardFee + tipAmount).toFixed(2)}</span>
-  </div>
+  {#if !settled && ccFeePercent > 0}
+    <div class="mt-1 flex justify-between text-base font-extrabold">
+      <span>Pay with Cash</span><span>${totals.total.toFixed(2)}</span>
+    </div>
+    <div class="flex justify-between text-base font-extrabold">
+      <span>Pay with Card (+{(ccFeePercent * 100).toFixed(1)}% fee)</span><span>${cardTotal.toFixed(2)}</span>
+    </div>
+  {:else}
+    <div class="mt-1 flex justify-between text-base font-extrabold">
+      <span>{settled ? 'Total' : 'Amount Due'}</span><span>${(totals.total + cardFee + tipAmount).toFixed(2)}</span>
+    </div>
+  {/if}
 
   <div class="my-2 border-t border-dashed border-black"></div>
 

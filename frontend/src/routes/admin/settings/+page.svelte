@@ -14,6 +14,7 @@
   let acceptTips = false;
   let barEnabled = false;
   let kitchenPrinterEnabled = false;
+  let kitchenDisplayEnabled = true;
   let readyAlertAllStaff = false;
   let ccFeePct = '';
   let ticketFooterPaid = '';
@@ -51,6 +52,7 @@
     { key: 'accept_tips' as const, label: 'Accept tips', value: acceptTips },
     { key: 'bar_enabled' as const, label: 'Bar', value: barEnabled },
     { key: 'kitchen_printer_enabled' as const, label: 'Kitchen printer', value: kitchenPrinterEnabled },
+    { key: 'kitchen_display_enabled' as const, label: 'Kitchen display', value: kitchenDisplayEnabled },
     { key: 'ready_alert_all_staff' as const, label: 'Order-ready alert for all staff', value: readyAlertAllStaff },
   ];
 
@@ -67,6 +69,7 @@
       acceptTips = raw.accept_tips === '1';
       barEnabled = raw.bar_enabled === '1';
       kitchenPrinterEnabled = raw.kitchen_printer_enabled === '1';
+      kitchenDisplayEnabled = raw.kitchen_display_enabled !== '0';
       readyAlertAllStaff = raw.ready_alert_all_staff === '1';
       ccFeePct = raw.cc_fee_percent ? String(Number(raw.cc_fee_percent) * 100) : '0';
       ticketFooterPaid = raw.ticket_footer_paid ?? 'Thank you!';
@@ -89,12 +92,13 @@
   }
 
   function toggleFlag(
-    which: 'accept_tips' | 'bar_enabled' | 'kitchen_printer_enabled' | 'ready_alert_all_staff',
+    which: 'accept_tips' | 'bar_enabled' | 'kitchen_printer_enabled' | 'kitchen_display_enabled' | 'ready_alert_all_staff',
     value: boolean
   ) {
     if (which === 'accept_tips') acceptTips = value;
     if (which === 'bar_enabled') barEnabled = value;
     if (which === 'kitchen_printer_enabled') kitchenPrinterEnabled = value;
+    if (which === 'kitchen_display_enabled') kitchenDisplayEnabled = value;
     if (which === 'ready_alert_all_staff') readyAlertAllStaff = value;
   }
 
@@ -142,6 +146,7 @@
           accept_tips: acceptTips ? '1' : '0',
           bar_enabled: barEnabled ? '1' : '0',
           kitchen_printer_enabled: kitchenPrinterEnabled ? '1' : '0',
+          kitchen_display_enabled: kitchenDisplayEnabled ? '1' : '0',
           ready_alert_all_staff: readyAlertAllStaff ? '1' : '0',
           cc_fee_percent: ccFeeRate,
           ticket_footer_paid: ticketFooterPaid.trim(),

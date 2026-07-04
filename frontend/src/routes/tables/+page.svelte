@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import type { MockTable } from '$lib/mockData';
+  import type { MockTable, TableStatus } from '$lib/mockData';
   import { apiJson } from '$lib/api';
   import { auth } from '$lib/stores/auth';
   import { settings } from '$lib/stores/settings';
@@ -11,6 +11,7 @@
   import OrderStatusBadge from '$lib/components/OrderStatusBadge.svelte';
   import Button from '$lib/components/Button.svelte';
   import TopBarNav from '$lib/components/TopBarNav.svelte';
+  import Receipt from '$lib/components/Receipt.svelte';
 
   // Layout (position, seats, shape, label) is real admin-configured data.
   // Occupancy status/total/order are derived live from real unpaid orders
@@ -50,6 +51,23 @@
   }) | undefined;
   $: occupiedCount = orderableTables.filter((t) => t.status !== 'open').length;
 
+  // Backing data for printing a bill straight from the floor plan — the same
+  // unpaid orders already grouped for the selected table's rail, just kept
+  // around in net_* form so the printed bill matches checkout's own totals
+  // (net_* reflects voids/comps/discounts; the gross fields don't).
+  $: selectedOrders = selected ? (byTable[selected.id] ?? []) : [];
+  $: billTotals = {
+    subtotal: selectedOrders.reduce((sum, o) => sum + o.net_subtotal, 0),
+    tax: selectedOrders.reduce((sum, o) => sum + o.net_tax, 0),
+    total: selectedOrders.reduce((sum, o) => sum + o.net_total, 0),
+  };
+  $: billAdjustments = selectedOrders.reduce((sum, o) => sum + o.adjustment_total, 0);
+  $: billOrderIdLabel = selectedOrders.map((o) => `#${o.id}`).join(', ');
+  // The Receipt stays mounted (invisible except under @media print) once a
+  // bill has been requested for whichever table is selected — mirrors
+  // checkout's own printBill()/billRequested pattern exactly.
+  let billRequested = false;
+
   async function loadLayout() {
     try {
       layout = await apiJson<TableLayoutRow[]>('/api/tables');
@@ -77,24 +95,57 @@
     return () => clearInterval(pollId);
   });
 
-  const legend: { label: string; class: string }[] = [
-    { label: 'Open', class: 'bg-white border-2 border-counter-dashed' },
-    { label: 'Ordered', class: 'bg-counter-delivery' },
-    { label: 'Cooking', class: 'bg-counter-dinein' },
-    { label: 'Food ready', class: 'bg-counter-paid' },
-    { label: 'Needs bill', class: 'bg-counter-orange' },
+  const legend: { label: string; class: string; status: TableStatus }[] = [
+    { label: 'Open', class: 'bg-white border-2 border-counter-dashed', status: 'open' },
+    { label: 'Ordered', class: 'bg-counter-delivery', status: 'ordered' },
+    { label: 'Cooking', class: 'bg-counter-dinein', status: 'cooking' },
+    { label: 'Food ready', class: 'bg-counter-paid', status: 'ready' },
+    { label: 'Needs bill', class: 'bg-counter-orange', status: 'needs_bill' },
   ];
+
+  // Clicking a legend entry "focuses" the floor plan on tables in that
+  // status — every other orderable table dims (see TableTile's `dimmed`
+  // prop) and, if any table matches, it's selected so the rail shows its
+  // details. Clicking the same legend entry again clears the filter.
+  let statusFilter: TableStatus | null = null;
+
+  function toggleStatusFilter(status: TableStatus) {
+    statusFilter = statusFilter === status ? null : status;
+    if (statusFilter) {
+      const firstMatch = orderableTables.find((t) => t.status === statusFilter);
+      if (firstMatch) {
+        selectedId = firstMatch.id;
+        billRequested = false;
+      }
+    }
+  }
 
   function select(t: MockTable) {
     if (t.orderable === false) return; // landmarks (e.g. the service window) aren't selectable here
     selectedId = t.id;
+    billRequested = false;
+  }
+
+  async function printBill() {
+    if (!selected || !selectedOrders.length) return;
+    try {
+      await apiJson('/api/orders/mark-bill-printed', {
+        method: 'PATCH',
+        body: JSON.stringify({ table_identifier: selected.id }),
+      });
+    } catch {
+      // Printing still proceeds even if the Register flag couldn't be set.
+    }
+    billRequested = true;
+    await tick();
+    window.print();
   }
 
   $: navLinks = [
     { href: '/', label: 'Order' },
     { href: '/pickup', label: 'Pickup' },
     { href: '/punch', label: 'Time Clock' },
-    { href: '/dashboard', label: 'Dashboard' },
+    ...($auth.user?.role === 'admin' ? [{ href: '/dashboard', label: 'Dashboard' }] : []),
     ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
     ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),
   ];
@@ -110,13 +161,28 @@
     <div class="text-lg font-extrabold text-counter-ink">Floor</div>
     <div class="font-mono text-sm text-counter-muted">{occupiedCount} of {orderableTables.length} occupied</div>
     <div class="flex-1"></div>
-    <div class="hidden items-center gap-4 text-sm font-semibold text-counter-muted-2 md:flex">
+    <div class="hidden items-center gap-2 text-sm font-semibold text-counter-muted-2 md:flex">
       {#each legend as l}
-        <div class="flex items-center gap-1.5">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-lg border px-2 py-1 {statusFilter === l.status
+            ? 'border-counter-ink bg-counter-ink text-white'
+            : 'border-transparent hover:bg-counter-tabs'}"
+          on:click={() => toggleStatusFilter(l.status)}
+        >
           <span class="h-3.5 w-3.5 rounded {l.class}"></span>
           {l.label}
-        </div>
+        </button>
       {/each}
+      {#if statusFilter}
+        <button
+          type="button"
+          class="text-xs font-bold text-counter-muted underline"
+          on:click={() => (statusFilter = null)}
+        >
+          Clear
+        </button>
+      {/if}
     </div>
     <TopBarNav links={navLinks} />
   </div>
@@ -141,6 +207,7 @@
               width={table.width}
               height={table.height}
               selected={table.id === selectedId}
+              dimmed={Boolean(statusFilter) && table.orderable !== false && table.status !== statusFilter}
               on:select={(e) => select(e.detail)}
             />
           </div>
@@ -184,6 +251,14 @@
             <span>Total</span>
             <span class="font-mono">${(selected.total ?? 0).toFixed(2)}</span>
           </div>
+          {#if selected.order}
+            <button
+              class="mb-2.5 h-11 w-full rounded-lg border border-counter-line text-sm font-bold text-counter-ink"
+              on:click={printBill}
+            >
+              Print Bill →
+            </button>
+          {/if}
           <div class="flex gap-2.5">
             <div class="flex-1"><Button variant="secondary" fullWidth on:click={() => goto(`/?table=${encodeURIComponent(selected.id)}`)}>Add items</Button></div>
             <div class="flex-[1.4]"><Button variant="success" fullWidth on:click={() => goto(`/checkout?table=${selected.id}`)}>Checkout</Button></div>
@@ -193,3 +268,22 @@
     {/if}
   </div>
 </div>
+
+{#if billRequested && selected}
+  <Receipt
+    restaurantName={$settings.restaurant_name}
+    orderLabel={`Dine In · Table ${selected.id}`}
+    orderIds={billOrderIdLabel}
+    lines={selected.order ?? []}
+    totals={{ subtotal: billTotals.subtotal, tax: billTotals.tax, total: billTotals.total }}
+    adjustments={billAdjustments}
+    taxRate={$settings.tax_rate}
+    timestamp={new Date().toISOString()}
+    settled={false}
+    tipAmount={0}
+    cardFee={0}
+    ccFeePercent={$settings.cc_fee_percent}
+    paidMessage={$settings.ticket_footer_paid}
+    billMessage={$settings.ticket_footer_unpaid}
+  />
+{/if}

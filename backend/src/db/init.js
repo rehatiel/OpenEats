@@ -540,6 +540,11 @@ function seedDefaults(db) {
     accept_tips: '0',
     bar_enabled: '0',
     kitchen_printer_enabled: '0',
+    // On by default — a kitchen display is the app's existing default
+    // behavior (the /kitchen screen was always reachable pre-toggle). A
+    // kitchen running only a ticket printer can turn this off; both can be
+    // left on at once since they're independent settings.
+    kitchen_display_enabled: '1',
     // Off by default — the order-ready alert only pops for the staff member
     // who placed the order, not the whole floor. An admin can widen it to
     // everyone (e.g. a small crew that expedites as a team).

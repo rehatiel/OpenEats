@@ -19,14 +19,15 @@ Source plan: `C:\Users\Ben\.claude\plans\streamed-jingling-zebra.md` (full origi
   - Frontend: `frontend/src/lib/stores/orderAlerts.ts` polls `GET /api/orders?kitchen_status=ready` every 5s independently of `/kitchen`'s/`/tables`'s own polls; `OrderReadyToast.svelte` mounted once in the root layout, visible on every staff page (including kitchen/bar themselves), starts/stops with auth state so it never runs on the public `/punch` kiosk.
   - `GET /api/reports/order-efficiency` + `order-ready-efficiency` registry entry — avg/max minutes from ready to acknowledged, by station.
   - Verified live: item ready → shows in `?kitchen_status=ready` → acknowledge stamps once (idempotent on retry) → report reflects the elapsed wait; 404s on bad order/item ids; 401 with no auth.
-- **Not yet committed to git** — everything from Phase 4 (this session) is uncommitted locally. Confirm with the user before committing.
+- **Phase 5 — Kitchen printer auto-print** — done:
+  - `frontend/src/lib/components/KitchenTicketPrint.svelte` — invisible-except-`@media print`, mirrors `Receipt.svelte`'s `#receipt-print` pattern via a new `#kitchen-ticket-print` id (`app.css` updated to reveal either).
+  - `frontend/src/lib/printQueue.ts` — a small serial print queue (`window.print()` opens one native dialog at a time; advances on the `afterprint` event with a 4s timeout fallback). Purely frontend, no schema change — the "audit trail" column mentioned as optional in the original scoping was skipped since dedup is handled client-side the same way as the kitchen new-ticket chime (skip printing on first load, only print orders not already seen).
+  - `/kitchen` and `/bar` both enqueue a print job for each newly-arrived ticket when `settings.kitchen_printer_enabled` is on; each page owns its own queue/printer.
+  - Verified: clean build, both pages load, `kitchen_printer_enabled` reads correctly from settings.
+  - **Caveat for the owner**: the KDS/bar device needs an OS-default printer configured on that machine — this is a hardware/deployment detail the app can't guarantee or verify itself.
+- Everything since Phase 3 in this session (bug fixes, Phase 3–5, table-picker fix, ready-alert redesign + staff-scoping, checkout float-rounding fix, kitchen new-order chime) is **uncommitted locally**. Confirm with the user before committing.
 
-## Phase 5 (scoped, not built): Kitchen printer auto-print
-
-- No new tables beyond `settings.kitchen_printer_enabled` (already exists from Phase 1); optionally `orders.kitchen_ticket_printed_at` for an audit trail, mirroring the existing `mark-bill-printed` pattern.
-- Purely frontend: a `KitchenTicketPrint.svelte` mirroring `Receipt.svelte`'s invisible-except-`@media print` pattern.
-- `/kitchen` and `/bar` auto-`window.print()` newly-arrived tickets when the setting is on.
-- Deployment note to flag to the owner: the KDS/bar device needs an OS-default printer configured — a hardware/deployment detail the app can't guarantee.
+## All phases from the original roadmap are now built.
 
 ## Verification checklist (for whichever phase is picked up next)
 

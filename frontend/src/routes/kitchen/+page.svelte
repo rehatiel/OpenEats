@@ -2,11 +2,14 @@
   import { onMount } from 'svelte';
   import { apiJson } from '$lib/api';
   import { auth } from '$lib/stores/auth';
+  import { settings } from '$lib/stores/settings';
   import Ticket from '$lib/components/Ticket.svelte';
   import TopBarNav from '$lib/components/TopBarNav.svelte';
+  import KitchenTicketPrint from '$lib/components/KitchenTicketPrint.svelte';
   import type { OrderRow } from '$lib/orders';
   import { toTicket, stationStatus, nextItemStatus } from '$lib/kds';
   import { playNewTicketChime } from '$lib/sound';
+  import { createPrintQueue } from '$lib/printQueue';
 
   $: navLinks = $auth.user?.role !== 'kitchen' ? [{ href: '/', label: 'Exit ↗' }] : [];
 
@@ -23,12 +26,14 @@
 
   const POLL_MS = 4000;
 
-  // Chimes when a ticket this board hasn't shown before shows up — recomputed
-  // fresh from each poll's result (not accumulated), so a ticket that leaves
-  // the board (bumped to completed) and later somehow reappears still dings.
-  // Skipped on the very first load so opening/refreshing the display doesn't
-  // replay a chime for every ticket already in progress.
+  // Chimes/auto-prints when a ticket this board hasn't shown before shows
+  // up — recomputed fresh from each poll's result (not accumulated), so a
+  // ticket that leaves the board (bumped to completed) and later somehow
+  // reappears still triggers both. Skipped on the very first load so
+  // opening/refreshing the display doesn't replay a chime or reprint every
+  // ticket already in progress.
   let knownOrderIds: Set<number> | null = null;
+  const { current: printingOrder, enqueue: enqueuePrint } = createPrintQueue<OrderRow>();
 
   async function loadOrders() {
     try {
@@ -40,8 +45,14 @@
       // the kitchen to do doesn't linger on this board.
       orders = fetched.filter((o) => stationStatus(o, STATION) !== 'completed');
 
-      if (knownOrderIds && orders.some((o) => !knownOrderIds!.has(o.id))) {
-        playNewTicketChime();
+      if (knownOrderIds) {
+        const newOrders = orders.filter((o) => !knownOrderIds!.has(o.id));
+        // The chime is for someone watching the screen — skip it when the
+        // display itself is turned off. Printing stays independent of that
+        // (a kitchen can run printer-only, with this page just kept open
+        // headless on a kiosk browser to drive the print queue).
+        if (newOrders.length && $settings.kitchen_display_enabled) playNewTicketChime();
+        if ($settings.kitchen_printer_enabled) newOrders.forEach(enqueuePrint);
       }
       knownOrderIds = new Set(orders.map((o) => o.id));
 
@@ -138,13 +149,29 @@
     </div>
   {/if}
 
-  <!-- ticket rail -->
-  <div class="flex flex-1 gap-4 overflow-x-auto overflow-y-hidden p-[18px]">
-    {#each visibleTickets as ticket (ticket.orderId)}
-      <Ticket {ticket} on:advance={(e) => advance(e.detail)} />
-    {/each}
-    {#if visibleTickets.length === 0}
-      <div class="flex flex-1 items-center justify-center text-kds-muted">No tickets for this filter.</div>
-    {/if}
-  </div>
+  {#if $settings.kitchen_display_enabled}
+    <!-- ticket rail -->
+    <div class="flex flex-1 gap-4 overflow-x-auto overflow-y-hidden p-[18px]">
+      {#each visibleTickets as ticket (ticket.orderId)}
+        <Ticket {ticket} on:advance={(e) => advance(e.detail)} />
+      {/each}
+      {#if visibleTickets.length === 0}
+        <div class="flex flex-1 items-center justify-center text-kds-muted">No tickets for this filter.</div>
+      {/if}
+    </div>
+  {:else}
+    <!-- The display is off (printer-only kitchen) — polling/printing above
+         still runs, this page just doesn't show tickets. A browser can be
+         left open here headless purely to drive the print queue. -->
+    <div class="flex flex-1 flex-col items-center justify-center gap-2 text-kds-muted">
+      <div class="text-lg font-bold">Kitchen display is turned off</div>
+      <div class="text-sm">Enable it in Admin → Settings if you want tickets shown here.</div>
+    </div>
+  {/if}
 </div>
+
+<KitchenTicketPrint
+  restaurantName={$settings.restaurant_name}
+  stationLabel="KITCHEN"
+  ticket={$printingOrder ? toTicket($printingOrder, nowTick, STATION) : null}
+/>

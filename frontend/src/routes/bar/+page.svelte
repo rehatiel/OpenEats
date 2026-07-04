@@ -2,10 +2,13 @@
   import { onMount } from 'svelte';
   import { apiJson } from '$lib/api';
   import { auth } from '$lib/stores/auth';
+  import { settings } from '$lib/stores/settings';
   import Ticket from '$lib/components/Ticket.svelte';
   import TopBarNav from '$lib/components/TopBarNav.svelte';
+  import KitchenTicketPrint from '$lib/components/KitchenTicketPrint.svelte';
   import type { OrderRow } from '$lib/orders';
   import { toTicket, stationStatus, nextItemStatus } from '$lib/kds';
+  import { createPrintQueue } from '$lib/printQueue';
 
   const STATION = 'bar' as const;
   const navLinks = [{ href: '/', label: 'Exit ↗' }];
@@ -21,6 +24,15 @@
 
   const POLL_MS = 4000;
 
+  // Auto-prints when a ticket this board hasn't shown before shows up —
+  // recomputed fresh from each poll's result (not accumulated), so a ticket
+  // that leaves the board (bumped to completed) and later somehow
+  // reappears still reprints. Skipped on the very first load so
+  // opening/refreshing the display doesn't reprint every ticket already in
+  // progress.
+  let knownOrderIds: Set<number> | null = null;
+  const { current: printingOrder, enqueue: enqueuePrint } = createPrintQueue<OrderRow>();
+
   async function loadOrders() {
     try {
       const fetched = await apiJson<OrderRow[]>('/api/orders?station=bar&kitchen_status=new,cooking,ready');
@@ -30,6 +42,13 @@
       // station-specific status so a ticket with nothing left for the bar
       // to do doesn't linger here.
       orders = fetched.filter((o) => stationStatus(o, STATION) !== 'completed');
+
+      if (knownOrderIds) {
+        const newOrders = orders.filter((o) => !knownOrderIds!.has(o.id));
+        if ($settings.kitchen_printer_enabled) newOrders.forEach(enqueuePrint);
+      }
+      knownOrderIds = new Set(orders.map((o) => o.id));
+
       loadError = '';
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load bar tickets';
@@ -132,3 +151,9 @@
     {/if}
   </div>
 </div>
+
+<KitchenTicketPrint
+  restaurantName={$settings.restaurant_name}
+  stationLabel="BAR"
+  ticket={$printingOrder ? toTicket($printingOrder, nowTick, STATION) : null}
+/>

@@ -420,6 +420,11 @@
           on:settled={handleSplitSettled}
         />
       {:else}
+        <div class="rounded-xl border-2 border-counter-ink bg-counter-cream px-4 py-3 text-center">
+          <div class="text-xs font-bold uppercase tracking-wide text-counter-muted">Total Due</div>
+          <div class="font-mono text-[42px] font-black leading-tight text-counter-ink">${owedWithExtras.toFixed(2)}</div>
+        </div>
+
         {#if $settings.accept_tips}
           <div>
             <div class="mb-1.5 text-xs font-bold uppercase tracking-wide text-counter-muted">Tip</div>
@@ -514,6 +519,7 @@
     settled={completed}
     tipAmount={completed ? tipAmount : 0}
     cardFee={completed ? cardFeeAmount : 0}
+    ccFeePercent={$settings.cc_fee_percent}
     paidMessage={$settings.ticket_footer_paid}
     billMessage={$settings.ticket_footer_unpaid}
   />

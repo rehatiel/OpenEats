@@ -14,17 +14,21 @@
   }
 }
 
-/* "Print only this element" — used by the checkout receipt so window.print()
-   outputs just the receipt regardless of whatever else is on screen. */
+/* "Print only this element" — used by the checkout receipt and the
+   kitchen/bar auto-print ticket so window.print() outputs just that one
+   element regardless of whatever else is on screen. */
 @media print {
   body * {
     visibility: hidden;
   }
   #receipt-print,
-  #receipt-print * {
+  #receipt-print *,
+  #kitchen-ticket-print,
+  #kitchen-ticket-print * {
     visibility: visible;
   }
-  #receipt-print {
+  #receipt-print,
+  #kitchen-ticket-print {
     position: absolute;
     top: 0;
     left: 0;

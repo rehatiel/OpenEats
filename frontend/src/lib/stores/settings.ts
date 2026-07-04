@@ -10,6 +10,7 @@ export interface PlatformSettings {
   accept_tips: boolean;
   bar_enabled: boolean;
   kitchen_printer_enabled: boolean;
+  kitchen_display_enabled: boolean;
   ready_alert_all_staff: boolean;
   cc_fee_percent: number;
   ticket_footer_paid: string;
@@ -28,6 +29,7 @@ const DEFAULTS: PlatformSettings = {
   accept_tips: false,
   bar_enabled: false,
   kitchen_printer_enabled: false,
+  kitchen_display_enabled: true,
   ready_alert_all_staff: false,
   cc_fee_percent: 0,
   ticket_footer_paid: 'Thank you!',
@@ -55,6 +57,8 @@ export async function loadSettings(token: string): Promise<void> {
       bar_enabled: raw.bar_enabled !== undefined ? raw.bar_enabled !== '0' : DEFAULTS.bar_enabled,
       kitchen_printer_enabled:
         raw.kitchen_printer_enabled !== undefined ? raw.kitchen_printer_enabled !== '0' : DEFAULTS.kitchen_printer_enabled,
+      kitchen_display_enabled:
+        raw.kitchen_display_enabled !== undefined ? raw.kitchen_display_enabled !== '0' : DEFAULTS.kitchen_display_enabled,
       ready_alert_all_staff:
         raw.ready_alert_all_staff !== undefined ? raw.ready_alert_all_staff !== '0' : DEFAULTS.ready_alert_all_staff,
       cc_fee_percent: raw.cc_fee_percent !== undefined ? Number(raw.cc_fee_percent) : DEFAULTS.cc_fee_percent,

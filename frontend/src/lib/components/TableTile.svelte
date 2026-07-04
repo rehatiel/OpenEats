@@ -9,6 +9,10 @@
   // sizing so every existing call site renders identically.
   export let width: number | undefined = undefined;
   export let height: number | undefined = undefined;
+  // Set while a status-legend filter is active and this table doesn't match
+  // it — fades the tile out instead of hiding it, so the floor layout never
+  // reflows while "focusing" on a subset of tables.
+  export let dimmed = false;
 
   $: tileWidth = width ?? (table.shape === 'round' ? 150 : 112);
   $: tileHeight = height ?? (table.shape === 'round' ? 150 : 112);
@@ -53,7 +57,7 @@
 
 {#if table.orderable === false}
   <button
-    class="flex flex-col items-center justify-center rounded bg-counter-ink px-2 {selected ? 'ring-[3px] ring-counter-ink ring-offset-2' : ''}"
+    class="flex flex-col items-center justify-center rounded bg-counter-ink px-2 transition-opacity {selected ? 'ring-[3px] ring-counter-ink ring-offset-2' : ''} {dimmed ? 'opacity-30' : ''}"
     style="width: {tileWidth}px; height: {tileHeight}px;"
     on:click={() => dispatch('select', table)}
   >
@@ -63,9 +67,9 @@
   </button>
 {:else}
   <button
-    class="flex flex-col items-center justify-center {table.shape === 'round' ? 'rounded-full' : 'rounded-2xl'} {statusFill[
+    class="flex flex-col items-center justify-center transition-opacity {table.shape === 'round' ? 'rounded-full' : 'rounded-2xl'} {statusFill[
       table.status
-    ]} {selected ? 'ring-[3px] ring-counter-ink' : ''}"
+    ]} {selected ? 'ring-[3px] ring-counter-ink' : ''} {dimmed ? 'opacity-30' : ''}"
     style="width: {tileWidth}px; height: {tileHeight}px;"
     on:click={() => dispatch('select', table)}
   >

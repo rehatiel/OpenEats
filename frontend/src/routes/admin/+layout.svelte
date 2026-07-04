@@ -35,7 +35,7 @@
       {#each navItems as item}
         <a
           href={item.href}
-          class="block rounded-lg px-3.5 py-2.5 text-sm font-bold {pathname.startsWith(item.href)
+          class="block rounded-lg px-3.5 py-2.5 text-sm font-bold {pathname === item.href || pathname.startsWith(item.href + '/')
             ? 'bg-counter-ink text-white'
             : 'text-counter-muted-2 hover:bg-counter-tabs'}"
         >

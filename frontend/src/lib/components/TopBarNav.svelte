@@ -17,10 +17,22 @@
     goto('/login');
   }
 
+  const buttonBase = 'rounded-lg border px-3.5 py-2 text-sm font-bold transition-transform active:scale-[0.98]';
+
   $: linkClass =
-    'text-sm font-bold ' +
-    (theme === 'kds' ? 'text-kds-muted hover:text-kds-text' : 'text-counter-muted-2 hover:text-counter-ink') +
+    buttonBase +
+    ' ' +
+    (theme === 'kds'
+      ? 'border-kds-border bg-kds-card-2 text-kds-muted hover:text-kds-text'
+      : 'border-counter-line bg-counter-paper text-counter-ink hover:bg-counter-tabs') +
     (hideLinksOnMobile ? ' hidden md:block' : '');
+
+  $: signOutClass =
+    buttonBase +
+    ' ' +
+    (theme === 'kds'
+      ? 'border-kds-border bg-kds-card-2 text-kds-muted hover:text-kds-text'
+      : 'border-counter-line bg-counter-paper text-counter-ink hover:bg-counter-tabs');
 </script>
 
 {#each links as link (link.href)}
@@ -30,11 +42,11 @@
 {#if $auth.user}
   {#if theme === 'kds'}
     <div class="hidden font-mono text-sm text-kds-muted lg:block">{$auth.user.name} · {$auth.user.role}</div>
-    <button class="text-sm font-bold text-kds-muted hover:text-kds-text" on:click={signOut}>Sign out</button>
+    <button class={signOutClass} on:click={signOut}>Sign out</button>
   {:else}
     <div class="hidden items-center gap-2 lg:flex">
       <div class="font-mono text-[13px] text-counter-muted">{$auth.user.name} · {$auth.user.role}</div>
-      <button class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink" on:click={signOut}>Sign out</button>
+      <button class={signOutClass} on:click={signOut}>Sign out</button>
     </div>
   {/if}
 {/if}
