@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import { MENU_ITEMS, CATEGORIES } from '$lib/mockData';
   import type { CartLine, OrderType, MockMenuItem, MockTable } from '$lib/mockData';
   import { apiJson } from '$lib/api';
@@ -44,6 +45,15 @@
   $: pickerCanvasHeight = Math.max(320, ...tableOptions.map((t) => t.pos_y + t.height + 48), 0);
 
   onMount(async () => {
+    // Arriving from the floor plan's/register's "Add items" — carries the
+    // table (or seat) the staff member already had selected there, instead
+    // of dropping back to an unselected order screen.
+    const tableParam = $page.url.searchParams.get('table');
+    if (tableParam) {
+      orderType = 'dine_in';
+      selectedTable = tableParam;
+    }
+
     try {
       const [layout, unpaidOrders] = await Promise.all([
         apiJson<TableLayoutRow[]>('/api/tables'),

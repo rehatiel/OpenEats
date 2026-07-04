@@ -121,7 +121,7 @@
             <div class="mb-3 font-mono text-xs text-counter-muted">Open {entry.minutesOpen} min</div>
             <button
               class="h-11 w-full rounded-lg bg-counter-ink text-sm font-bold text-white"
-              on:click={() => goto(`/checkout?table=${encodeURIComponent(entry.label)}`)}
+              on:click={() => goto(`/checkout?table=${encodeURIComponent(entry.label)}&from=register`)}
             >
               Charge →
             </button>

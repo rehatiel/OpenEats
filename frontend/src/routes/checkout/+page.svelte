@@ -18,6 +18,11 @@
   // /pickup instead).
   $: tableParam = $page.url.searchParams.get('table');
   $: orderParam = $page.url.searchParams.get('order');
+  // Where to return to when done — a table checkout can be launched from the
+  // floor plan (/tables) or the Register queue (/register), and should go
+  // back to whichever one sent it here rather than always defaulting to the
+  // floor plan.
+  $: returnTo = orderParam ? '/pickup' : $page.url.searchParams.get('from') === 'register' ? '/register' : '/tables';
 
   let orders: OrderRow[] = [];
   let loading = true;
@@ -258,7 +263,7 @@
   }
 
   function finishUp() {
-    goto(orderParam ? '/pickup' : '/tables');
+    goto(returnTo);
   }
 </script>
 
@@ -272,7 +277,7 @@
     <div class="flex h-16 flex-none items-center gap-4 border-b border-counter-line bg-white px-4 sm:px-5">
       <button
         class="flex h-11 w-11 flex-none items-center justify-center rounded-lg bg-counter-paper text-lg font-bold text-counter-ink"
-        on:click={() => goto(orderParam ? '/pickup' : '/tables')}
+        on:click={() => goto(returnTo)}
         aria-label="Back"
       >
         ←

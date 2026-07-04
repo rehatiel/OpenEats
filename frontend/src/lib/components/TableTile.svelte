@@ -77,14 +77,20 @@
       {/if}
       <div class="mt-0.5 font-mono text-[10px] font-bold {captionColor[table.status]}">OPEN</div>
     {:else if table.status === 'ready'}
-      <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
+      {#if !seatMatch}
+        <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
+      {/if}
       <div class="mt-0.5 font-mono text-[10px] font-extrabold text-white">READY ●</div>
     {:else if table.status === 'ordered' || table.status === 'cooking'}
-      <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
+      {#if !seatMatch}
+        <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
+      {/if}
       <div class="mt-0.5 font-mono text-[10px] font-extrabold text-white">{statusLabel[table.status]}</div>
     {:else}
-      <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
-      <div class="mt-0.5 font-mono text-[13px] font-extrabold text-white">${table.total?.toFixed(2)}</div>
+      {#if !seatMatch}
+        <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
+        <div class="mt-0.5 font-mono text-[13px] font-extrabold text-white">${table.total?.toFixed(2)}</div>
+      {/if}
     {/if}
   </button>
 {/if}

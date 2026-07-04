@@ -184,7 +184,7 @@
             <span class="font-mono">${(selected.total ?? 0).toFixed(2)}</span>
           </div>
           <div class="flex gap-2.5">
-            <div class="flex-1"><Button variant="secondary" fullWidth on:click={() => goto('/')}>Add items</Button></div>
+            <div class="flex-1"><Button variant="secondary" fullWidth on:click={() => goto(`/?table=${encodeURIComponent(selected.id)}`)}>Add items</Button></div>
             <div class="flex-[1.4]"><Button variant="success" fullWidth on:click={() => goto(`/checkout?table=${selected.id}`)}>Checkout</Button></div>
           </div>
         </div>
