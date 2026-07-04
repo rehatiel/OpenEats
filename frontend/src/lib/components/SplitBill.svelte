@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { apiJson } from '$lib/api';
+  import { roundCents } from '$lib/orders';
   import Keypad from './Keypad.svelte';
 
   interface SplitLine {
@@ -107,12 +108,14 @@
     chargeTipPct !== null ? Math.round(chargingTotal * (chargeTipPct / 100) * 100) / 100 : Number(chargeCustomTip) || 0;
   $: chargeCardFeeAmount =
     chargeTenderType === 'card' && ccFeePercent > 0 ? Math.round(chargingTotal * ccFeePercent * 100) / 100 : 0;
-  $: chargingTotalWithExtras = chargingTotal + chargeTipAmount + chargeCardFeeAmount;
+  $: chargingTotalWithExtras = roundCents(chargingTotal + chargeTipAmount + chargeCardFeeAmount);
 
   // Tendered/change-due, mirroring the main checkout tender panel exactly.
   $: tendered = entry ? Number(entry) : Math.ceil(chargingTotalWithExtras / 10) * 10 + 10;
-  $: changeDue = Math.max(0, tendered - chargingTotalWithExtras);
-  $: canCharge = chargingTotal > 0 && tendered >= chargingTotalWithExtras;
+  $: changeDue = roundCents(Math.max(0, tendered - chargingTotalWithExtras));
+  // Compare rounded-to-the-cent values — otherwise a guest typing the exact
+  // amount due can be rejected by floating-point noise past the cent.
+  $: canCharge = chargingTotal > 0 && roundCents(tendered) >= chargingTotalWithExtras;
   $: chargeBase10 = Math.ceil(chargingTotalWithExtras / 10) * 10;
   $: quickCash = [
     Math.ceil(chargingTotalWithExtras),

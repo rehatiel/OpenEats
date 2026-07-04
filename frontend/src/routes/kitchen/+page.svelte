@@ -6,6 +6,7 @@
   import TopBarNav from '$lib/components/TopBarNav.svelte';
   import type { OrderRow } from '$lib/orders';
   import { toTicket, stationStatus, nextItemStatus } from '$lib/kds';
+  import { playNewTicketChime } from '$lib/sound';
 
   $: navLinks = $auth.user?.role !== 'kitchen' ? [{ href: '/', label: 'Exit ↗' }] : [];
 
@@ -22,6 +23,13 @@
 
   const POLL_MS = 4000;
 
+  // Chimes when a ticket this board hasn't shown before shows up — recomputed
+  // fresh from each poll's result (not accumulated), so a ticket that leaves
+  // the board (bumped to completed) and later somehow reappears still dings.
+  // Skipped on the very first load so opening/refreshing the display doesn't
+  // replay a chime for every ticket already in progress.
+  let knownOrderIds: Set<number> | null = null;
+
   async function loadOrders() {
     try {
       const fetched = await apiJson<OrderRow[]>('/api/orders?station=kitchen&kitchen_status=new,cooking,ready');
@@ -31,6 +39,12 @@
       // using the station-specific status so a ticket with nothing left for
       // the kitchen to do doesn't linger on this board.
       orders = fetched.filter((o) => stationStatus(o, STATION) !== 'completed');
+
+      if (knownOrderIds && orders.some((o) => !knownOrderIds!.has(o.id))) {
+        playNewTicketChime();
+      }
+      knownOrderIds = new Set(orders.map((o) => o.id));
+
       loadError = '';
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load kitchen tickets';

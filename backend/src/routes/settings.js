@@ -26,6 +26,7 @@ const VALIDATORS = {
   accept_tips: boolString,
   bar_enabled: boolString,
   kitchen_printer_enabled: boolString,
+  ready_alert_all_staff: boolString,
   cc_fee_percent: percentString,
   ticket_footer_paid: nonEmptyString,
   ticket_footer_unpaid: nonEmptyString,

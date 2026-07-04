@@ -12,6 +12,8 @@
   import type { Role } from '$lib/stores/auth';
   import { loadSettings } from '$lib/stores/settings';
   import { startIdleTimer } from '$lib/idleTimer';
+  import { startOrderAlerts, stopOrderAlerts } from '$lib/stores/orderAlerts';
+  import OrderReadyToast from '$lib/components/OrderReadyToast.svelte';
 
   // Kitchen sessions are a shared, always-on display — they only ever get
   // the KDS screen, never the rest of the POS.
@@ -85,11 +87,23 @@
     }
   }
 
+  // Runs for any signed-in staff member regardless of page, including the
+  // kitchen/bar screens themselves — a ticket they just bumped to 'ready'
+  // toasting back at them is harmless, and other pages have no other way to
+  // learn a ticket's ready. Never runs on /punch — that page has no user.
+  $: if ($auth.user) {
+    startOrderAlerts();
+  } else {
+    stopOrderAlerts();
+  }
+
   onDestroy(() => {
     if (stopIdleTimer) stopIdleTimer();
+    stopOrderAlerts();
   });
 </script>
 
 {#if allowed}
   <slot />
 {/if}
+<OrderReadyToast />

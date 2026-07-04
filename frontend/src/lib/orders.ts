@@ -16,6 +16,10 @@ export interface OrderItemRow {
   unit_price: number;
   station: Station;
   status: ItemStatus;
+  // Stamped once the item first reaches 'ready', and once a server
+  // dismisses the order-ready alert for it — null until each happens.
+  ready_at: string | null;
+  acknowledged_at: string | null;
   // Sum of void/comp/discount adjustments recorded against this line
   // (pre-tax dollars) — 0 for an unadjusted item.
   adjustment_total: number;
@@ -70,6 +74,10 @@ export interface OrderRow {
   table_identifier: string | null;
   customer_name: string | null;
   server_name: string | null;
+  // Durable id snapshot of whoever was logged in when the order was placed
+  // — null for pre-migration orders. Scopes the order-ready alert to this
+  // person unless settings.ready_alert_all_staff is on.
+  server_user_id: number | null;
   kitchen_status: KitchenStatus;
   payment_status: PaymentStatus;
   subtotal: number;
@@ -88,6 +96,15 @@ export interface OrderRow {
   timestamp: string;
   bill_printed_at: string | null;
   items: OrderItemRow[];
+}
+
+// Guards against binary floating-point drift (0.1 + 0.2 === 0.30000000000000004)
+// compounding across summed order totals/tips/fees. Without this, a guest
+// typing the exact amount due can get rejected by a >= comparison because
+// the total being compared against carries a few extra bits of noise past
+// the cent that never show up in its .toFixed(2) display.
+export function roundCents(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 export function groupOrdersByTable(orders: OrderRow[]): Record<string, OrderRow[]> {

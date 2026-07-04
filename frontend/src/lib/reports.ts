@@ -174,6 +174,27 @@ export const REPORTS: ReportEntry[] = [
     note: (data) => data.note ?? null,
   },
   {
+    slug: 'order-ready-efficiency',
+    title: 'Order-Ready Efficiency',
+    cadence: 'daily',
+    description: 'How long ready tickets sit before staff dismiss the alert, by station — measures service pickup speed.',
+    endpoint: '/api/reports/order-efficiency',
+    rangeOptions: ['today', 'week', 'month'],
+    defaultRange: 'week',
+    summaryFields: [
+      { key: 'totalCount', label: 'Tickets acknowledged', format: 'number' },
+      { key: 'avgMinutes', label: 'Avg wait (min)', format: 'number' },
+      { key: 'maxMinutes', label: 'Longest wait (min)', format: 'number' },
+    ],
+    columns: [
+      { key: 'station', label: 'Station', format: 'text' },
+      { key: 'count', label: 'Tickets', format: 'number' },
+      { key: 'avgMinutes', label: 'Avg wait (min)', format: 'number' },
+      { key: 'maxMinutes', label: 'Longest wait (min)', format: 'number' },
+    ],
+    toRows: (data) => data.byStation,
+  },
+  {
     slug: 'cogs-variance',
     title: 'COGS & Inventory Variance',
     cadence: 'weekly',

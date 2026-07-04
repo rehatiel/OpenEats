@@ -14,6 +14,7 @@
   let acceptTips = false;
   let barEnabled = false;
   let kitchenPrinterEnabled = false;
+  let readyAlertAllStaff = false;
   let ccFeePct = '';
   let ticketFooterPaid = '';
   let ticketFooterUnpaid = '';
@@ -50,6 +51,7 @@
     { key: 'accept_tips' as const, label: 'Accept tips', value: acceptTips },
     { key: 'bar_enabled' as const, label: 'Bar', value: barEnabled },
     { key: 'kitchen_printer_enabled' as const, label: 'Kitchen printer', value: kitchenPrinterEnabled },
+    { key: 'ready_alert_all_staff' as const, label: 'Order-ready alert for all staff', value: readyAlertAllStaff },
   ];
 
   async function load() {
@@ -65,6 +67,7 @@
       acceptTips = raw.accept_tips === '1';
       barEnabled = raw.bar_enabled === '1';
       kitchenPrinterEnabled = raw.kitchen_printer_enabled === '1';
+      readyAlertAllStaff = raw.ready_alert_all_staff === '1';
       ccFeePct = raw.cc_fee_percent ? String(Number(raw.cc_fee_percent) * 100) : '0';
       ticketFooterPaid = raw.ticket_footer_paid ?? 'Thank you!';
       ticketFooterUnpaid = raw.ticket_footer_unpaid ?? 'Please pay at the counter';
@@ -85,10 +88,14 @@
     if (which === 'delivery') serviceDelivery = value;
   }
 
-  function toggleFlag(which: 'accept_tips' | 'bar_enabled' | 'kitchen_printer_enabled', value: boolean) {
+  function toggleFlag(
+    which: 'accept_tips' | 'bar_enabled' | 'kitchen_printer_enabled' | 'ready_alert_all_staff',
+    value: boolean
+  ) {
     if (which === 'accept_tips') acceptTips = value;
     if (which === 'bar_enabled') barEnabled = value;
     if (which === 'kitchen_printer_enabled') kitchenPrinterEnabled = value;
+    if (which === 'ready_alert_all_staff') readyAlertAllStaff = value;
   }
 
   onMount(load);
@@ -135,6 +142,7 @@
           accept_tips: acceptTips ? '1' : '0',
           bar_enabled: barEnabled ? '1' : '0',
           kitchen_printer_enabled: kitchenPrinterEnabled ? '1' : '0',
+          ready_alert_all_staff: readyAlertAllStaff ? '1' : '0',
           cc_fee_percent: ccFeeRate,
           ticket_footer_paid: ticketFooterPaid.trim(),
           ticket_footer_unpaid: ticketFooterUnpaid.trim(),

@@ -60,20 +60,22 @@
         apiJson<OrderRow[]>('/api/orders?payment_status=unpaid'),
       ]);
       const byTable = groupOrdersByTable(unpaidOrders);
-      // Landmarks (e.g. a service window) aren't real order destinations —
-      // exclude them from the picker entirely.
-      tableOptions = layout
-        .filter((row) => row.orderable)
-        .map((row) => ({
-          ...summarizeTable(byTable[row.label]),
-          id: row.label,
-          seats: row.seats,
-          shape: row.shape,
-          pos_x: row.pos_x,
-          pos_y: row.pos_y,
-          width: row.width,
-          height: row.height,
-        }));
+      // Includes non-orderable rows too (landmarks like a service window,
+      // and bar-style seat-group parents) so the picker's layout matches the
+      // floor plan visually — a bar's seats render clustered under its
+      // parent tile instead of floating unlabeled. pickTable() below is what
+      // keeps landmarks/parents from actually being selectable.
+      tableOptions = layout.map((row) => ({
+        ...summarizeTable(byTable[row.label]),
+        id: row.label,
+        seats: row.seats,
+        shape: row.shape,
+        pos_x: row.pos_x,
+        pos_y: row.pos_y,
+        width: row.width,
+        height: row.height,
+        orderable: Boolean(row.orderable),
+      }));
     } catch {
       // Table picker just won't have options; order type toggle still works.
     }
@@ -91,6 +93,7 @@
   });
 
   function pickTable(t: MockTable) {
+    if (t.orderable === false) return; // landmarks (e.g. the service window, or a bar's seat-group parent) aren't selectable here
     selectedTable = t.id;
     tableError = false;
     tablePickerOpen = false;

@@ -412,6 +412,14 @@ function initDb(dbPath) {
   ensureColumn(db, 'order_items', 'station', "TEXT NOT NULL DEFAULT 'kitchen'");
   ensureColumn(db, 'order_items', 'status', "TEXT NOT NULL DEFAULT 'new'");
 
+  // Stamped the moment an item's status first reaches 'ready', and when a
+  // server dismisses the order-ready alert for it — acknowledged_at minus
+  // ready_at is the Order-Ready Efficiency report's core metric. Both stay
+  // set once written (see recomputeOrderKitchenStatus's callers in
+  // orders.js), so re-polling never loses the original ready timestamp.
+  ensureColumn(db, 'order_items', 'ready_at', 'TEXT');
+  ensureColumn(db, 'order_items', 'acknowledged_at', 'TEXT');
+
   // Tip/tender-split/CC-fee tracking, and a durable+display join to the
   // server who gets credit for the tip (order's server, not the checkout
   // operator).
@@ -425,6 +433,12 @@ function initDb(dbPath) {
   // Additive alongside the existing free-text `category` (display grouping)
   // — this is the tax-relevant grouping, backfilled below.
   ensureColumn(db, 'menu_items', 'category_id', 'INTEGER REFERENCES menu_categories(id)');
+
+  // Durable join to whoever was logged in when the order was placed —
+  // server_name alone is a display snapshot and can't be reliably matched
+  // back to a user (two staff could share a first name). Scopes the
+  // order-ready alert to that person by default (see settings.ready_alert_all_staff).
+  ensureColumn(db, 'orders', 'server_user_id', 'INTEGER REFERENCES users(id)');
 
   // One-time-per-new-category backfill: every distinct free-text `category`
   // not yet mapped gets an auto-created menu_categories row (tax_category
@@ -526,6 +540,10 @@ function seedDefaults(db) {
     accept_tips: '0',
     bar_enabled: '0',
     kitchen_printer_enabled: '0',
+    // Off by default — the order-ready alert only pops for the staff member
+    // who placed the order, not the whole floor. An admin can widen it to
+    // everyone (e.g. a small crew that expedites as a team).
+    ready_alert_all_staff: '0',
     cc_fee_percent: '0',
     ticket_footer_paid: 'Thank you!',
     ticket_footer_unpaid: 'Please pay at the counter',

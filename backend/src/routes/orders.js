@@ -29,8 +29,8 @@ function createOrdersRouter(db) {
   const getRecipeLines = db.prepare('SELECT ingredient_id, quantity_required FROM recipe_items WHERE menu_item_id = ?');
   const decrementStock = db.prepare('UPDATE ingredients SET current_stock = current_stock - ? WHERE id = ?');
   const insertOrder = db.prepare(`
-    INSERT INTO orders (type, table_identifier, customer_name, server_name, subtotal, tax, total, calculated_food_cost)
-    VALUES (@type, @table_identifier, @customer_name, @server_name, @subtotal, @tax, @total, @calculated_food_cost)
+    INSERT INTO orders (type, table_identifier, customer_name, server_name, server_user_id, subtotal, tax, total, calculated_food_cost)
+    VALUES (@type, @table_identifier, @customer_name, @server_name, @server_user_id, @subtotal, @tax, @total, @calculated_food_cost)
   `);
   const insertOrderItem = db.prepare(`
     INSERT INTO order_items (order_id, menu_item_id, quantity, note, station, status)
@@ -38,7 +38,8 @@ function createOrdersRouter(db) {
   `);
   const getOrder = db.prepare('SELECT * FROM orders WHERE id = ?');
   const listOrderItems = db.prepare(`
-    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, oi.station, oi.status, mi.name, mi.retail_price AS unit_price,
+    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, oi.station, oi.status, oi.ready_at, oi.acknowledged_at,
+           mi.name, mi.retail_price AS unit_price,
            COALESCE((SELECT SUM(oia.amount) FROM order_item_adjustments oia WHERE oia.order_item_id = oi.id), 0) AS adjustment_total
     FROM order_items oi
     JOIN menu_items mi ON mi.id = oi.menu_item_id
@@ -49,10 +50,22 @@ function createOrdersRouter(db) {
     `SELECT status FROM order_items WHERE order_id = ? AND station IN (${ROLLUP_STATIONS.map(() => '?').join(', ')})`
   );
   const setOrderKitchenStatus = db.prepare('UPDATE orders SET kitchen_status = ? WHERE id = ?');
-  const setAllItemStatus = db.prepare(
-    `UPDATE order_items SET status = ? WHERE order_id = ? AND station IN (${ROLLUP_STATIONS.map(() => '?').join(', ')})`
+  // ready_at is stamped the first time an item reaches 'ready' and never
+  // overwritten afterward (the CASE guard), so bouncing through statuses
+  // again later can't reset the Order-Ready Efficiency report's clock.
+  const setAllItemStatus = db.prepare(`
+    UPDATE order_items
+    SET status = ?, ready_at = CASE WHEN ? = 'ready' AND ready_at IS NULL THEN ? ELSE ready_at END
+    WHERE order_id = ? AND station IN (${ROLLUP_STATIONS.map(() => '?').join(', ')})
+  `);
+  const setStationItemStatus = db.prepare(`
+    UPDATE order_items
+    SET status = ?, ready_at = CASE WHEN ? = 'ready' AND ready_at IS NULL THEN ? ELSE ready_at END
+    WHERE order_id = ? AND station = ?
+  `);
+  const acknowledgeItem = db.prepare(
+    "UPDATE order_items SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE id = ? AND order_id = ?"
   );
-  const setStationItemStatus = db.prepare('UPDATE order_items SET status = ? WHERE order_id = ? AND station = ?');
 
   const getOrderItemForOrder = db.prepare(`
     SELECT oi.id, oi.order_id, oi.menu_item_id, oi.quantity, oi.status, mi.retail_price AS unit_price
@@ -171,6 +184,7 @@ function createOrdersRouter(db) {
         table_identifier: table_identifier ?? null,
         customer_name: customerName,
         server_name: req.user.name,
+        server_user_id: req.user.id,
         subtotal,
         tax,
         total,
@@ -316,7 +330,7 @@ function createOrdersRouter(db) {
 
     db.transaction(() => {
       if (kitchenStatus !== undefined) {
-        setAllItemStatus.run(kitchenStatus, id, ...ROLLUP_STATIONS);
+        setAllItemStatus.run(kitchenStatus, kitchenStatus, new Date().toISOString(), id, ...ROLLUP_STATIONS);
       }
       if (paymentStatus !== undefined) {
         db.prepare('UPDATE orders SET payment_status = ? WHERE id = ?').run(paymentStatus, id);
@@ -348,10 +362,32 @@ function createOrdersRouter(db) {
     }
 
     db.transaction(() => {
-      setStationItemStatus.run(status, id, station);
+      setStationItemStatus.run(status, status, new Date().toISOString(), id, station);
       recomputeOrderKitchenStatus(id);
     })();
 
+    res.json(serialize(getOrder.get(id)));
+  });
+
+  // Dismisses the order-ready alert for one item. Any authenticated staff
+  // member may acknowledge — whoever's nearest the till when a ticket comes
+  // up, not necessarily the order's own server — mirroring how any
+  // logged-in staff can advance kitchen/bar statuses today. A no-op (not an
+  // error) if already acknowledged, so a double-tap or a retried request
+  // can't fail.
+  router.patch('/:id/items/:itemId/acknowledge', requireAuth, (req, res) => {
+    const id = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    const existing = getOrder.get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'order not found' });
+    }
+    const item = getOrderItemForOrder.get(itemId, id);
+    if (!item) {
+      return res.status(404).json({ error: 'order item not found' });
+    }
+
+    acknowledgeItem.run(new Date().toISOString(), itemId, id);
     res.json(serialize(getOrder.get(id)));
   });
 

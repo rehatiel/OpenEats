@@ -5,7 +5,7 @@
   import { settings } from '$lib/stores/settings';
   import { auth, logout } from '$lib/stores/auth';
   import { apiJson } from '$lib/api';
-  import { combineOrderLines } from '$lib/orders';
+  import { combineOrderLines, roundCents } from '$lib/orders';
   import type { OrderRow } from '$lib/orders';
   import TypeBadge from '$lib/components/TypeBadge.svelte';
   import Keypad from '$lib/components/Keypad.svelte';
@@ -126,7 +126,7 @@
   // What the plain Tender button actually needs to collect — the full total
   // minus anything a split-bill session has already charged toward this
   // table, so it can never double-charge on top of collected guest payments.
-  $: owed = Math.max(0, totals.total - alreadyCollected);
+  $: owed = roundCents(Math.max(0, totals.total - alreadyCollected));
 
   let tenderType: 'cash' | 'card' | 'split' = 'cash';
   let entry = '';
@@ -150,11 +150,14 @@
   $: cardFeeAmount =
     tenderType === 'card' && $settings.cc_fee_percent > 0 ? Math.round(owed * $settings.cc_fee_percent * 100) / 100 : 0;
 
-  $: owedWithExtras = owed + tipAmount + cardFeeAmount;
+  $: owedWithExtras = roundCents(owed + tipAmount + cardFeeAmount);
 
   $: tendered = entry ? Number(entry) : Math.ceil(owedWithExtras / 10) * 10 + 10; // defaults to the $40 quick-cash suggestion
-  $: changeDue = Math.max(0, tendered - owedWithExtras);
-  $: canComplete = orders.length > 0 && tendered >= owedWithExtras;
+  $: changeDue = roundCents(Math.max(0, tendered - owedWithExtras));
+  // Compare rounded-to-the-cent values on both sides — otherwise a guest
+  // typing the exact total can be rejected by leftover floating-point noise
+  // in owedWithExtras that never shows up in its displayed $X.XX.
+  $: canComplete = orders.length > 0 && roundCents(tendered) >= owedWithExtras;
 
   $: base10 = Math.ceil(owedWithExtras / 10) * 10;
   $: quickCash = [Math.ceil(owedWithExtras), Math.ceil(owedWithExtras / 5) * 5, base10 + 10, base10 + 20];

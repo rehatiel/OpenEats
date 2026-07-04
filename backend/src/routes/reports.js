@@ -305,6 +305,15 @@ function createReportsRouter(db) {
     WHERE ss.starts_at >= ? AND ss.starts_at < ?
   `);
 
+  // Only items that actually got dismissed in the period — a ready item
+  // nobody's acknowledged yet has no elapsed wait to report until it is.
+  const readyAckItemsForPeriod = db.prepare(`
+    SELECT oi.station, oi.ready_at, oi.acknowledged_at
+    FROM order_items oi
+    WHERE oi.ready_at IS NOT NULL AND oi.acknowledged_at IS NOT NULL
+      AND oi.ready_at >= ? AND oi.ready_at < ?
+  `);
+
   const openInvoicesQuery = db.prepare(`
     SELECT vi.*, v.name AS vendor_name
     FROM vendor_invoices vi
@@ -658,6 +667,51 @@ function createReportsRouter(db) {
       totalActualHours: byEmployee.reduce((sum, e) => sum + e.actualHours, 0),
       totalScheduledCost: byEmployee.reduce((sum, e) => sum + e.scheduledCost, 0),
       totalActualCost: byEmployee.reduce((sum, e) => sum + e.actualCost, 0),
+    });
+  });
+
+  // Order-Ready Efficiency — how long a ticket sits ready before a server
+  // dismisses the alert (acknowledged_at - ready_at), by station. Measures
+  // service pickup speed, not kitchen/bar prep speed.
+  router.get('/order-efficiency', requireAuth, (req, res) => {
+    const rangeKey = VALID_RANGES.includes(req.query.range) ? req.query.range : 'week';
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const { start, end } = resolveRange(rangeKey, tz);
+    const startSql = toSqlTimestamp(start);
+    const endSql = toSqlTimestamp(end);
+
+    const rows = readyAckItemsForPeriod
+      .all(startSql, endSql)
+      .map((r) => ({ station: r.station, minutes: (new Date(r.acknowledged_at).getTime() - new Date(r.ready_at).getTime()) / 60000 }));
+
+    const byStation = new Map();
+    for (const r of rows) {
+      const entry = byStation.get(r.station) ?? { station: r.station, count: 0, totalMinutes: 0, maxMinutes: 0 };
+      entry.count += 1;
+      entry.totalMinutes += r.minutes;
+      entry.maxMinutes = Math.max(entry.maxMinutes, r.minutes);
+      byStation.set(r.station, entry);
+    }
+
+    const byStationOut = Array.from(byStation.values())
+      .map((e) => ({
+        station: e.station,
+        count: e.count,
+        avgMinutes: Math.round((e.totalMinutes / e.count) * 10) / 10,
+        maxMinutes: Math.round(e.maxMinutes * 10) / 10,
+      }))
+      .sort((a, b) => a.station.localeCompare(b.station));
+
+    const totalCount = rows.length;
+    const avgMinutes = totalCount > 0 ? rows.reduce((sum, r) => sum + r.minutes, 0) / totalCount : 0;
+    const maxMinutes = totalCount > 0 ? Math.max(...rows.map((r) => r.minutes)) : 0;
+
+    res.json({
+      range: { key: rangeKey, start: start.toUTC().toISO(), end: end.toUTC().toISO() },
+      totalCount,
+      avgMinutes: Math.round(avgMinutes * 10) / 10,
+      maxMinutes: Math.round(maxMinutes * 10) / 10,
+      byStation: byStationOut,
     });
   });
 
