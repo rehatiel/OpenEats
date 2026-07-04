@@ -30,6 +30,10 @@ export interface ReportEntry {
   rangeOptions?: string[];
   defaultRange?: string;
   usesDateParam?: boolean;
+  // Adds a "Staff" dropdown (populated from /api/users) that sends the
+  // selected user's id as ?staff_id= — for reports broken out per employee
+  // where a manager wants to isolate just one person instead of everyone.
+  staffFilter?: boolean;
   summaryFields?: SummaryField[];
   columns?: ReportColumn[];
   toRows?: (data: any) => Record<string, unknown>[];
@@ -73,6 +77,23 @@ export const REPORTS: ReportEntry[] = [
       { key: 'ccFees', label: 'Card processing fees', format: 'currency' },
       { key: 'paymentCount', label: 'Payments', format: 'number' },
     ],
+  },
+  {
+    slug: 'tips-by-server',
+    title: 'Tips by Server',
+    cadence: 'daily',
+    description: 'Cash vs. card tips collected by each server for a specific business day.',
+    endpoint: '/api/reports/tips-by-server',
+    usesDateParam: true,
+    staffFilter: true,
+    summaryFields: [{ key: 'totalTips', label: 'Total tips', format: 'currency' }],
+    columns: [
+      { key: 'server', label: 'Server', format: 'text' },
+      { key: 'cashTips', label: 'Cash tips', format: 'currency' },
+      { key: 'cardTips', label: 'Card tips', format: 'currency' },
+      { key: 'totalTips', label: 'Total tips', format: 'currency' },
+    ],
+    toRows: (data) => data.byServer,
   },
   {
     slug: 'product-mix',

@@ -12,14 +12,24 @@
   let loadError = '';
   let range = '';
   let date = new Date().toISOString().slice(0, 10);
+  let staffId = '';
+  let staffOptions: { id: number; name: string }[] = [];
   let loadedForSlug = '';
 
-  // Reset the range to this report's default whenever the slug changes
-  // (e.g. navigating from one report to another) — otherwise a report with
-  // no 'today' option could inherit a stale range from the previous page.
+  // Reset the range/staff filter to this report's defaults whenever the
+  // slug changes (e.g. navigating from one report to another) — otherwise a
+  // report with no 'today' option (or no staff filter) could inherit stale
+  // state from the previous page.
   $: if (entry && loadedForSlug !== entry.slug) {
     range = entry.defaultRange ?? '';
+    staffId = '';
     loadedForSlug = entry.slug;
+  }
+
+  $: if (entry?.staffFilter && staffOptions.length === 0) {
+    apiJson<{ id: number; name: string; active: number }[]>('/api/admin/users')
+      .then((users) => (staffOptions = users.filter((u) => u.active).map((u) => ({ id: u.id, name: u.name }))))
+      .catch(() => {});
   }
 
   async function load() {
@@ -30,6 +40,7 @@
       const params = new URLSearchParams();
       if (entry.usesDateParam) params.set('date', date);
       else if (entry.rangeOptions) params.set('range', range);
+      if (entry.staffFilter && staffId) params.set('staff_id', staffId);
       const qs = params.toString();
       data = await apiJson(qs ? `${entry.endpoint}?${qs}` : entry.endpoint);
     } catch (e) {
@@ -40,7 +51,7 @@
     }
   }
 
-  $: entry, range, date, load();
+  $: entry, range, date, staffId, load();
 
   $: rows = entry?.toRows && data ? entry.toRows(data) : [];
   $: note = entry?.note && data ? entry.note(data) : null;
@@ -75,6 +86,18 @@
             </button>
           {/each}
         </div>
+      {/if}
+
+      {#if entry.staffFilter}
+        <select
+          class="h-10 rounded-lg border border-counter-line bg-white px-3 text-sm text-counter-ink"
+          bind:value={staffId}
+        >
+          <option value="">All staff</option>
+          {#each staffOptions as u (u.id)}
+            <option value={u.id}>{u.name}</option>
+          {/each}
+        </select>
       {/if}
     </div>
 

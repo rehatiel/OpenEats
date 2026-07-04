@@ -97,6 +97,20 @@ function createReportsRouter(db) {
     ORDER BY totalTips DESC
   `);
 
+  // Filters to one staff member by their durable server_user_id, not
+  // server_name — a display-name string can collide between staff or get
+  // renamed, same reasoning as orders.server_user_id elsewhere in the app.
+  const tipsByServerFilteredQuery = db.prepare(`
+    SELECT COALESCE(server_name, 'Unknown') AS server,
+           COALESCE(SUM(CASE WHEN cash_amount > 0 THEN tip_amount ELSE 0 END), 0) AS cashTips,
+           COALESCE(SUM(CASE WHEN card_amount > 0 THEN tip_amount ELSE 0 END), 0) AS cardTips,
+           COALESCE(SUM(tip_amount), 0) AS totalTips
+    FROM guest_payments
+    WHERE paid_at >= ? AND paid_at < ? AND tip_amount > 0 AND server_user_id = ?
+    GROUP BY server
+    ORDER BY totalTips DESC
+  `);
+
   // Any authenticated role can read — mirrors every other operational
   // report/read endpoint (checkout needs tax_rate, kitchen needs orders).
   router.get('/dashboard', requireAuth, (req, res) => {
@@ -370,6 +384,31 @@ function createReportsRouter(db) {
     const { start, end } = resolveRange(rangeKey, tz);
     const row = tenderReconciliationQuery.get(toSqlTimestamp(start), toSqlTimestamp(end));
     res.json({ range: { key: rangeKey, start: start.toUTC().toISO(), end: end.toUTC().toISO() }, ...row });
+  });
+
+  // Tips by Server — run for a single business day (not a rolling
+  // today/week/month range) so a manager can pull, say, last Tuesday's tip
+  // totals for a specific payout without it being buried in a week average.
+  router.get('/tips-by-server', requireAuth, (req, res) => {
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const date = typeof req.query.date === 'string' && req.query.date.trim() !== '' ? req.query.date : null;
+    const start = date ? DateTime.fromISO(date, { zone: tz }).startOf('day') : DateTime.now().setZone(tz).startOf('day');
+    if (!start.isValid) {
+      return res.status(400).json({ error: 'date must be a valid YYYY-MM-DD date' });
+    }
+    const end = start.plus({ days: 1 });
+    const startSql = toSqlTimestamp(start);
+    const endSql = toSqlTimestamp(end);
+
+    const staffId = typeof req.query.staff_id === 'string' && req.query.staff_id.trim() !== '' ? Number(req.query.staff_id) : null;
+    if (req.query.staff_id !== undefined && (!Number.isInteger(staffId) || staffId <= 0)) {
+      return res.status(400).json({ error: 'staff_id must be a valid user id' });
+    }
+    const byServer = staffId
+      ? tipsByServerFilteredQuery.all(startSql, endSql, staffId)
+      : tipsByServerQuery.all(startSql, endSql);
+    const totalTips = byServer.reduce((sum, r) => sum + r.totalTips, 0);
+    res.json({ date: start.toISODate(), totalTips, byServer });
   });
 
   // Product Mix — quantity and sales value for every active menu item in
