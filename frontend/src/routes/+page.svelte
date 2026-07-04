@@ -1,17 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import { MENU_ITEMS, CATEGORIES } from '$lib/mockData';
   import type { CartLine, OrderType, MockMenuItem, MockTable } from '$lib/mockData';
   import { apiJson } from '$lib/api';
-  import { auth, logout } from '$lib/stores/auth';
+  import { auth } from '$lib/stores/auth';
   import { settings } from '$lib/stores/settings';
   import { summarizeTable, groupOrdersByTable } from '$lib/orders';
-  import type { OrderRow } from '$lib/orders';
+  import type { OrderRow, TableLayoutRow } from '$lib/orders';
   import CategoryTabs from '$lib/components/CategoryTabs.svelte';
   import ItemTile from '$lib/components/ItemTile.svelte';
   import CartPanel from '$lib/components/CartPanel.svelte';
   import TableTile from '$lib/components/TableTile.svelte';
+  import TopBarNav from '$lib/components/TopBarNav.svelte';
 
   let orderType: OrderType = 'dine_in';
   // Mock menu is the fallback until the real, admin-editable menu loads (or
@@ -28,16 +28,6 @@
   // Table selection for dine-in orders — sourced from the same admin-configured
   // table list the floor plan uses, laid out to match the real floor plan so
   // servers unfamiliar with the table numbers can recognize them by position.
-  interface TableLayoutRow {
-    label: string;
-    seats: number;
-    shape: 'square' | 'round';
-    pos_x: number;
-    pos_y: number;
-    width: number;
-    height: number;
-    orderable: number; // raw wire value (0/1)
-  }
   type PickerTable = MockTable & { pos_x: number; pos_y: number; width: number; height: number };
   let tableOptions: PickerTable[] = [];
   let selectedTable: string | null = null;
@@ -116,6 +106,15 @@
     orderType = enabledOrderTypes[0];
   }
 
+  $: navLinks = [
+    ...($settings.service_dine_in ? [{ href: '/tables', label: 'Tables' }, { href: '/register', label: 'Register' }] : []),
+    ...($settings.service_to_go || $settings.service_delivery ? [{ href: '/pickup', label: 'Pickup' }] : []),
+    ...($auth.user?.role !== 'staff' ? [{ href: '/dashboard', label: 'Dashboard' }] : []),
+    { href: '/kitchen', label: 'Kitchen ↗' },
+    ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
+    ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),
+  ];
+
   $: filteredItems = menuItems.filter((m) => m.category === activeCategory);
   $: orderLabel =
     orderType === 'dine_in'
@@ -144,6 +143,7 @@
             unit_price: item.retail_price,
             quantity: 1,
             options: item.options,
+            station: item.station ?? 'kitchen',
           },
         ];
     sent = false;
@@ -262,32 +262,7 @@
       {/if}
 
       <div class="flex-1"></div>
-      {#if $settings.service_dine_in}
-        <a href="/tables" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Tables</a>
-        <a href="/register" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Register</a>
-      {/if}
-      {#if $settings.service_to_go || $settings.service_delivery}
-        <a href="/pickup" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Pickup</a>
-      {/if}
-      {#if $auth.user?.role !== 'staff'}
-        <a href="/dashboard" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Dashboard</a>
-      {/if}
-      <a href="/kitchen" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Kitchen ↗</a>
-      {#if $auth.user?.role === 'admin'}
-        <a href="/admin/users" class="hidden text-sm font-bold text-counter-muted-2 hover:text-counter-ink md:block">Admin</a>
-      {/if}
-      <div class="hidden items-center gap-2 lg:flex">
-        <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-        <button
-          class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink"
-          on:click={() => {
-            logout();
-            goto('/login');
-          }}
-        >
-          Sign out
-        </button>
-      </div>
+      <TopBarNav links={navLinks} hideLinksOnMobile />
     </div>
 
     {#if tableError}

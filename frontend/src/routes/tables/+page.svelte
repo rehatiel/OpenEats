@@ -3,27 +3,14 @@
   import { goto } from '$app/navigation';
   import type { MockTable } from '$lib/mockData';
   import { apiJson } from '$lib/api';
-  import { auth, logout } from '$lib/stores/auth';
+  import { auth } from '$lib/stores/auth';
+  import { settings } from '$lib/stores/settings';
   import { summarizeTable, groupOrdersByTable, combineOrderLines } from '$lib/orders';
-  import type { OrderRow } from '$lib/orders';
+  import type { OrderRow, TableLayoutRow } from '$lib/orders';
   import TableTile from '$lib/components/TableTile.svelte';
   import OrderStatusBadge from '$lib/components/OrderStatusBadge.svelte';
   import Button from '$lib/components/Button.svelte';
-
-  interface TableLayoutRow {
-    id: number;
-    label: string;
-    seats: number;
-    shape: 'square' | 'round';
-    pos_x: number;
-    pos_y: number;
-    width: number;
-    height: number;
-    // Raw wire value from SQLite (0/1), same convention as `active`
-    // elsewhere — coerced to a real boolean where it's threaded into
-    // MockTable-shaped view objects below.
-    orderable: number;
-  }
+  import TopBarNav from '$lib/components/TopBarNav.svelte';
 
   // Layout (position, seats, shape, label) is real admin-configured data.
   // Occupancy status/total/order are derived live from real unpaid orders
@@ -102,6 +89,14 @@
     if (t.orderable === false) return; // landmarks (e.g. the service window) aren't selectable here
     selectedId = t.id;
   }
+
+  $: navLinks = [
+    { href: '/', label: 'Order' },
+    { href: '/pickup', label: 'Pickup' },
+    { href: '/dashboard', label: 'Dashboard' },
+    ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
+    ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),
+  ];
 </script>
 
 <svelte:head>
@@ -122,18 +117,7 @@
         </div>
       {/each}
     </div>
-    <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
-    <a href="/pickup" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Pickup</a>
-    <a href="/dashboard" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Dashboard</a>
-    {#if $auth.user?.role === 'admin'}
-      <a href="/admin/users" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Admin</a>
-    {/if}
-    <div class="hidden items-center gap-2 lg:flex">
-      <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-      <button class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink" on:click={() => { logout(); goto('/login'); }}>
-        Sign out
-      </button>
-    </div>
+    <TopBarNav links={navLinks} />
   </div>
 
   {#if loadError}

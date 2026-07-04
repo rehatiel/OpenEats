@@ -129,12 +129,27 @@
     ...(tableParam ? [{ key: 'split' as const, label: 'Split' }] : []),
   ];
 
-  $: tendered = entry ? Number(entry) : Math.ceil(owed / 10) * 10 + 10; // defaults to the $40 quick-cash suggestion
-  $: changeDue = Math.max(0, tendered - owed);
-  $: canComplete = orders.length > 0 && tendered >= owed;
+  // Tip selection — a preset % of the bill (before fee), or a typed custom
+  // dollar amount. Only applies to the plain (non-split) tender panel; a
+  // split-bill guest tips per-charge inside SplitBill instead.
+  let tipPct: number | null = 0;
+  let customTip = '';
+  const tipPresets = [0, 15, 18, 20];
+  $: tipAmount = tipPct !== null ? Math.round(owed * (tipPct / 100) * 100) / 100 : Number(customTip) || 0;
 
-  $: base10 = Math.ceil(owed / 10) * 10;
-  $: quickCash = [Math.ceil(owed), Math.ceil(owed / 5) * 5, base10 + 10, base10 + 20];
+  // Card processing fee applies to the bill amount only (not the tip),
+  // mirroring how the backend computes cc_fee_amount from card_amount.
+  $: cardFeeAmount =
+    tenderType === 'card' && $settings.cc_fee_percent > 0 ? Math.round(owed * $settings.cc_fee_percent * 100) / 100 : 0;
+
+  $: owedWithExtras = owed + tipAmount + cardFeeAmount;
+
+  $: tendered = entry ? Number(entry) : Math.ceil(owedWithExtras / 10) * 10 + 10; // defaults to the $40 quick-cash suggestion
+  $: changeDue = Math.max(0, tendered - owedWithExtras);
+  $: canComplete = orders.length > 0 && tendered >= owedWithExtras;
+
+  $: base10 = Math.ceil(owedWithExtras / 10) * 10;
+  $: quickCash = [Math.ceil(owedWithExtras), Math.ceil(owedWithExtras / 5) * 5, base10 + 10, base10 + 20];
 
   function pressKey(k: string) {
     if (k === '⌫') {
@@ -151,9 +166,28 @@
     completeError = '';
     try {
       if (orderParam) {
-        await apiJson(`/api/orders/${orderParam}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ payment_status: 'paid' }),
+        // Routed through guest-payments too (rather than a plain PATCH) so
+        // tips/tenders for to-go orders land in the same place table
+        // payments do — the dashboard's tips-by-server report reads only
+        // guest_payments. table_identifier is synthetic here since a to-go
+        // order has none; nothing keys off it matching a real table.
+        const order = orders[0];
+        await apiJson<{ settled: boolean }>('/api/guest-payments', {
+          method: 'POST',
+          body: JSON.stringify({
+            table_identifier: `to-go-${order.id}`,
+            order_ids: [order.id],
+            guest_label: orderLabel,
+            subtotal: totals.subtotal,
+            tax: totals.tax,
+            total: totals.total,
+            tender_type: tenderType,
+            tendered_amount: tendered,
+            items_summary: cartLines.map((l) => ({ name: l.name, quantity: l.quantity, share: 1, line_total: l.unit_price * l.quantity })),
+            tip_amount: tipAmount,
+            cash_amount: tenderType === 'cash' ? owed : 0,
+            card_amount: tenderType === 'card' ? owed : 0,
+          }),
         });
       } else {
         // Charges exactly `owed` (the full total minus anything already
@@ -173,6 +207,9 @@
             tender_type: tenderType,
             tendered_amount: tendered,
             items_summary: cartLines.map((l) => ({ name: l.name, quantity: l.quantity, share: 1, line_total: l.unit_price * l.quantity })),
+            tip_amount: tipAmount,
+            cash_amount: tenderType === 'cash' ? owed : 0,
+            card_amount: tenderType === 'card' ? owed : 0,
           }),
         });
         if (!res.settled) {
@@ -317,7 +354,7 @@
     {#if completed}
       <div class="flex flex-1 flex-col items-center justify-center gap-5 py-8 text-center">
         <div class="text-2xl font-extrabold text-counter-paid">Payment complete ✓</div>
-        <div class="font-mono text-sm text-counter-muted">Total charged: ${totals.total.toFixed(2)}</div>
+        <div class="font-mono text-sm text-counter-muted">Total charged: ${(totals.total + tipAmount + cardFeeAmount).toFixed(2)}</div>
         <button
           class="h-[68px] w-full rounded-xl bg-counter-ink text-lg font-extrabold text-white"
           on:click={() => window.print()}
@@ -362,10 +399,52 @@
           tableTotal={totals.total}
           {alreadyCollected}
           {tableSeats}
+          acceptTips={$settings.accept_tips}
+          ccFeePercent={$settings.cc_fee_percent}
           on:settled={handleSplitSettled}
         />
       {:else}
+        {#if $settings.accept_tips}
+          <div>
+            <div class="mb-1.5 text-xs font-bold uppercase tracking-wide text-counter-muted">Tip</div>
+            <div class="grid grid-cols-4 gap-2">
+              {#each tipPresets as pct}
+                <button
+                  class="h-11 rounded-lg text-sm font-bold {tipPct === pct
+                    ? 'bg-counter-ink text-white'
+                    : 'bg-counter-paper text-counter-ink'}"
+                  on:click={() => {
+                    tipPct = pct;
+                    customTip = '';
+                  }}
+                >
+                  {pct}%
+                </button>
+              {/each}
+            </div>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Custom tip $"
+              class="mt-2 h-10 w-full rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-sm text-counter-ink"
+              bind:value={customTip}
+              on:input={() => (tipPct = null)}
+            />
+          </div>
+        {/if}
+
         <div class="rounded-xl border border-[#E7E0D1] bg-counter-cream p-4">
+          {#if tipAmount > 0}
+            <div class="flex items-baseline justify-between text-sm text-counter-muted-2">
+              <span>Tip</span><span class="font-mono">${tipAmount.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if cardFeeAmount > 0}
+            <div class="flex items-baseline justify-between text-sm text-counter-muted-2">
+              <span>Card processing fee</span><span class="font-mono">${cardFeeAmount.toFixed(2)}</span>
+            </div>
+          {/if}
           <div class="flex items-baseline justify-between">
             <span class="text-sm font-semibold text-counter-muted">Tendered</span>
             <span class="font-mono text-[28px] font-extrabold text-counter-ink">${tendered.toFixed(2)}</span>
@@ -416,5 +495,9 @@
     taxRate={$settings.tax_rate}
     timestamp={completedAt || new Date().toISOString()}
     settled={completed}
+    tipAmount={completed ? tipAmount : 0}
+    cardFee={completed ? cardFeeAmount : 0}
+    paidMessage={$settings.ticket_footer_paid}
+    billMessage={$settings.ticket_footer_unpaid}
   />
 {/if}

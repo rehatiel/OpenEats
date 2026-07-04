@@ -6,6 +6,10 @@
 
 export type OrderType = 'dine_in' | 'to_go' | 'delivery';
 
+// Which prep station a menu item routes to when ordered — 'none' items
+// (e.g. a bottled drink) are tracked in reporting but shown on no display.
+export type Station = 'kitchen' | 'bar' | 'none';
+
 export interface MenuItemOption {
   id: number;
   label: string;
@@ -19,6 +23,7 @@ export interface MockMenuItem {
   category: string;
   retail_price: number;
   image_url?: string | null;
+  station?: Station;
   options?: MenuItemOption[];
 }
 
@@ -57,6 +62,9 @@ export interface CartLine {
   // sheet can render this line's quick-customization chips without needing
   // the full menu list threaded down to it.
   options?: MenuItemOption[];
+  // Also carried from the menu item at add-to-cart time so the "Send"
+  // button can show a station-aware breakdown without re-fetching the menu.
+  station?: Station;
 }
 
 // ---- Table management ----
@@ -111,48 +119,3 @@ export interface MockTicket {
   lines: TicketLine[];
   drinks?: TicketLine[];
 }
-
-// ---- Financials dashboard ----
-
-export const DASHBOARD_KPIS = {
-  grossSales: 14820,
-  grossSalesDelta: '+8.4% vs last wk',
-  foodCost: 4890,
-  foodCostPct: '33.0% of sales',
-  grossProfit: 9930,
-  grossProfitMargin: '67.0% margin',
-  orders: 642,
-  avgTicket: 23.08,
-};
-
-export interface DashboardDay {
-  label: string;
-  salesPct: number;
-  foodCostPct: number;
-}
-
-export const DASHBOARD_WEEK: DashboardDay[] = [
-  { label: 'Th', salesPct: 58, foodCostPct: 20 },
-  { label: 'Fr', salesPct: 66, foodCostPct: 22 },
-  { label: 'Sa', salesPct: 92, foodCostPct: 30 },
-  { label: 'Su', salesPct: 78, foodCostPct: 26 },
-  { label: 'Mo', salesPct: 44, foodCostPct: 15 },
-  { label: 'Tu', salesPct: 52, foodCostPct: 17 },
-  { label: 'We', salesPct: 70, foodCostPct: 23 },
-];
-
-
-export interface MarginRow {
-  name: string;
-  price: number;
-  foodCost: number;
-  sold: number;
-  marginPct: number;
-}
-
-export const MARGIN_TABLE: MarginRow[] = [
-  { name: 'Al Pastor Taco', price: 3.75, foodCost: 1.02, sold: 318, marginPct: 73 },
-  { name: 'Barbacoa Taco', price: 4.25, foodCost: 1.71, sold: 204, marginPct: 60 },
-  { name: 'Chips & Guac', price: 5.5, foodCost: 2.86, sold: 142, marginPct: 48 },
-  { name: 'Horchata', price: 3.0, foodCost: 0.42, sold: 276, marginPct: 86 },
-];

@@ -1,23 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { apiJson } from '$lib/api';
+  import type { TableLayoutRow } from '$lib/orders';
   import TableTile from '$lib/components/TableTile.svelte';
   import Button from '$lib/components/Button.svelte';
 
-  interface TableRow {
-    id: number;
-    label: string;
-    seats: number;
-    shape: 'square' | 'round';
-    pos_x: number;
-    pos_y: number;
-    width: number;
-    height: number;
-    sort_order: number;
-    // Raw wire value (0/1) — false marks a floor landmark (e.g. a service
-    // window) rather than a real orderable table.
-    orderable: number;
-  }
+  type TableRow = TableLayoutRow;
 
   const GRID_SIZE = 48;
   const MIN_SIZE = 64;
@@ -32,6 +20,33 @@
   let selectedId: number | null = null;
 
   $: selected = tables.find((t) => t.id === selectedId) ?? null;
+
+  // Seats are just ordinary child `tables` rows (see POST
+  // /api/tables/:id/seats) — a table can't itself have seats if it's
+  // already a seat.
+  $: seatCount = selected ? tables.filter((t) => t.parent_table_id === selected!.id).length : 0;
+  let seatsInput = '0';
+  $: if (selectedId !== null) seatsInput = String(seatCount);
+  let seatsSaving = false;
+  let seatsError = '';
+
+  async function updateSeats() {
+    if (!selected || selected.parent_table_id) return;
+    const count = Math.max(0, Math.round(Number(seatsInput)) || 0);
+    seatsSaving = true;
+    seatsError = '';
+    try {
+      await apiJson(`/api/tables/${selected.id}/seats`, {
+        method: 'POST',
+        body: JSON.stringify({ count }),
+      });
+      await load();
+    } catch (e) {
+      seatsError = e instanceof Error ? e.message : 'Failed to update seats';
+    } finally {
+      seatsSaving = false;
+    }
+  }
 
   async function load() {
     loading = true;
@@ -292,6 +307,35 @@
       <div class="mb-5 font-mono text-[11px] text-counter-faint">
         Landmarks (like a service window) show up on the floor plan but can't be picked as an order destination.
       </div>
+
+      {#if !selected.parent_table_id}
+        <label for="table-seat-count" class="mb-1 text-xs font-bold uppercase tracking-wide text-counter-muted">
+          Seats (bar-style, individually orderable)
+        </label>
+        <div class="mb-1 flex gap-2">
+          <input
+            id="table-seat-count"
+            type="number"
+            min="0"
+            class="h-11 flex-1 rounded-lg border border-counter-line bg-counter-paper px-3 text-[15px] text-counter-ink"
+            bind:value={seatsInput}
+          />
+          <button
+            class="h-11 rounded-lg bg-counter-ink px-4 text-sm font-bold text-white disabled:opacity-50"
+            disabled={seatsSaving || Number(seatsInput) === seatCount}
+            on:click={updateSeats}
+          >
+            {seatsSaving ? 'Saving…' : 'Update'}
+          </button>
+        </div>
+        {#if seatsError}
+          <div class="mb-3 text-xs font-semibold text-counter-orange-dark">{seatsError}</div>
+        {/if}
+        <div class="mb-5 font-mono text-[11px] text-counter-faint">
+          Generates individually-orderable seat tables (e.g. "{selected.label} - Seat 1") clustered under this one — turns
+          it into a landmark once it has any. Shrinking is blocked while a seat has an unpaid order.
+        </div>
+      {/if}
 
       <div class="mb-1 flex justify-between text-xs font-bold uppercase tracking-wide text-counter-muted">
         <span>Size</span>

@@ -16,6 +16,16 @@ function createTablesRouter(db) {
   const updateTableRow = db.prepare(
     'UPDATE tables SET label = ?, seats = ?, shape = ?, pos_x = ?, pos_y = ?, width = ?, height = ?, sort_order = ?, orderable = ? WHERE id = ?'
   );
+  const insertSeat = db.prepare(`
+    INSERT INTO tables (label, seats, shape, pos_x, pos_y, width, height, sort_order, active, orderable, parent_table_id)
+    VALUES (@label, 1, 'square', @pos_x, @pos_y, 56, 56, @sort_order, 1, 1, @parent_table_id)
+  `);
+  const listSeatsFor = db.prepare('SELECT * FROM tables WHERE parent_table_id = ? AND active = 1 ORDER BY sort_order');
+  const deactivateTable = db.prepare('UPDATE tables SET active = 0 WHERE id = ?');
+  const setOrderable = db.prepare('UPDATE tables SET orderable = ? WHERE id = ?');
+  const hasOpenOrderForLabel = db.prepare(
+    "SELECT 1 FROM orders WHERE table_identifier = ? AND payment_status = 'unpaid' LIMIT 1"
+  );
 
   // `orderable` is only ever meaningfully overridden by explicit true/false —
   // anything else (missing, non-boolean) falls back to the given default.
@@ -122,6 +132,69 @@ function createTablesRouter(db) {
     }
     db.prepare('UPDATE tables SET active = 0 WHERE id = ?').run(id);
     res.json({ ...existing, active: 0 });
+  });
+
+  // Grows/shrinks a table's generated seat rows to `count` — deliberately
+  // generic (any table can grow seats), not bar-specific; "Bar" is just the
+  // first table an admin applies this to. Each seat is an otherwise
+  // ordinary, independently-orderable `tables` row, so no other endpoint
+  // needs to know seats exist at all.
+  router.post('/:id/seats', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    const parent = getTable.get(id);
+    if (!parent) {
+      return res.status(404).json({ error: 'table not found' });
+    }
+    if (parent.parent_table_id) {
+      return res.status(400).json({ error: 'a seat cannot itself have seats' });
+    }
+
+    const { count } = req.body ?? {};
+    if (!Number.isInteger(count) || count < 0) {
+      return res.status(400).json({ error: 'count must be a non-negative integer' });
+    }
+
+    const existingSeats = listSeatsFor.all(id);
+
+    if (count < existingSeats.length) {
+      const excess = existingSeats.slice(count);
+      const blocked = excess.find((seat) => hasOpenOrderForLabel.get(seat.label));
+      if (blocked) {
+        return res.status(400).json({ error: `cannot remove ${blocked.label} — it has an unpaid order` });
+      }
+      db.transaction(() => {
+        for (const seat of excess) deactivateTable.run(seat.id);
+      })();
+    } else if (count > existingSeats.length) {
+      db.transaction(() => {
+        for (let i = existingSeats.length; i < count; i++) {
+          insertSeat.run({
+            label: `${parent.label} - Seat ${i + 1}`,
+            pos_x: parent.pos_x + i * 60,
+            pos_y: parent.pos_y + parent.height + 20,
+            sort_order: nextSortOrder.get().n,
+            parent_table_id: id,
+          });
+        }
+      })();
+    }
+
+    const seats = listSeatsFor.all(id);
+    // Once a table has any seats, guests order at the seat, not "the whole
+    // bar" as a unit — but it stays active so it still renders as a floor
+    // landmark grouping its seats. Shrinking back to zero restores whatever
+    // it was before (a normal table, in practice — `orderable` is only
+    // ever flipped off *by this endpoint*, never independently set to a
+    // landmark on a table that previously had seats). A table that never
+    // had seats and receives a no-op `count: 0` call is left untouched, so
+    // a real landmark's `orderable` can't be clobbered back to orderable.
+    if (seats.length > 0) {
+      setOrderable.run(0, id);
+    } else if (existingSeats.length > 0) {
+      setOrderable.run(1, id);
+    }
+
+    res.json({ parent: getTable.get(id), seats });
   });
 
   return router;

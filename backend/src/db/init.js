@@ -193,6 +193,49 @@ function initDb(dbPath) {
   // so staff can see which tables have already been given their check.
   ensureColumn(db, 'orders', 'bill_printed_at', 'TEXT');
 
+  // A non-null parent_table_id marks a row as a generated seat (e.g. a bar
+  // seat) whose tab is independent — see POST /api/tables/:id/seats.
+  ensureColumn(db, 'tables', 'parent_table_id', 'INTEGER REFERENCES tables(id)');
+
+  // Which prep station a menu item routes to when ordered. 'none' items
+  // (e.g. a bottled drink) are tracked for reporting but shown on no
+  // display. Validated in the route layer, not via CHECK, matching this
+  // file's existing convention for migrated columns.
+  ensureColumn(db, 'menu_items', 'station', "TEXT NOT NULL DEFAULT 'kitchen'");
+
+  // order_items.station is snapshotted from menu_items.station at order
+  // creation — reclassifying a menu item later must not rewrite the
+  // routing of historical tickets. order_items.status is the per-item
+  // analogue of orders.kitchen_status; orders.kitchen_status becomes a
+  // rollup over these (see recomputeOrderKitchenStatus in orders.js) so
+  // existing readers of the order-level field are unaffected.
+  ensureColumn(db, 'order_items', 'station', "TEXT NOT NULL DEFAULT 'kitchen'");
+  ensureColumn(db, 'order_items', 'status', "TEXT NOT NULL DEFAULT 'new'");
+
+  // Tip/tender-split/CC-fee tracking, and a durable+display join to the
+  // server who gets credit for the tip (order's server, not the checkout
+  // operator).
+  ensureColumn(db, 'guest_payments', 'tip_amount', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'guest_payments', 'cash_amount', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'guest_payments', 'card_amount', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'guest_payments', 'cc_fee_amount', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'guest_payments', 'server_user_id', 'INTEGER REFERENCES users(id)');
+  ensureColumn(db, 'guest_payments', 'server_name', 'TEXT');
+
+  // One-time backfill: pre-migration order_items default to status='new'
+  // (the column default), which would make every historical completed
+  // order reappear as a fresh ticket on the KDS after upgrade. Inherit the
+  // parent order's kitchen_status instead wherever it's more advanced than
+  // 'new'. Naturally idempotent — a second run finds nothing left matching
+  // the WHERE clause — so no separate migration-ran flag is needed.
+  db.exec(`
+    UPDATE order_items
+    SET status = (SELECT o.kitchen_status FROM orders o WHERE o.id = order_items.order_id)
+    WHERE status = 'new' AND EXISTS (
+      SELECT 1 FROM orders o WHERE o.id = order_items.order_id AND o.kitchen_status != 'new'
+    )
+  `);
+
   seedDefaults(db);
 
   return db;
@@ -231,6 +274,13 @@ function seedDefaults(db) {
     service_dine_in: '1',
     service_to_go: '1',
     service_delivery: '1',
+    accept_tips: '0',
+    bar_enabled: '0',
+    kitchen_printer_enabled: '0',
+    cc_fee_percent: '0',
+    ticket_footer_paid: 'Thank you!',
+    ticket_footer_unpaid: 'Please pay at the counter',
+    restaurant_timezone: 'America/Chicago',
   };
   const insertSettingIfMissing = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [key, value] of Object.entries(settingDefaults)) {

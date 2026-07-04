@@ -4,11 +4,16 @@ const { requireAuth } = require('../middleware/auth');
 const VALID_TYPES = ['dine_in', 'to_go', 'delivery'];
 const VALID_KITCHEN_STATUSES = ['new', 'cooking', 'ready', 'completed'];
 const VALID_PAYMENT_STATUSES = ['unpaid', 'paid'];
+const VALID_STATIONS = ['kitchen', 'bar', 'none'];
+const ROLLUP_STATIONS = ['kitchen', 'bar'];
+// Priority order for rolling per-item statuses up to a single order-level
+// kitchen_status — an order is only as "done" as its least-done item.
+const ROLLUP_PRIORITY = ['new', 'cooking', 'ready', 'completed'];
 
 function createOrdersRouter(db) {
   const router = express.Router();
 
-  const getMenuItem = db.prepare('SELECT id, name, retail_price FROM menu_items WHERE id = ? AND active = 1');
+  const getMenuItem = db.prepare('SELECT id, name, retail_price, station FROM menu_items WHERE id = ? AND active = 1');
   const getRecipeCost = db.prepare(`
     SELECT COALESCE(SUM(ri.quantity_required * i.unit_cost), 0) AS cost
     FROM recipe_items ri
@@ -23,20 +28,40 @@ function createOrdersRouter(db) {
     VALUES (@type, @table_identifier, @customer_name, @server_name, @subtotal, @tax, @total, @calculated_food_cost)
   `);
   const insertOrderItem = db.prepare(`
-    INSERT INTO order_items (order_id, menu_item_id, quantity, note)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO order_items (order_id, menu_item_id, quantity, note, station, status)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const getOrder = db.prepare('SELECT * FROM orders WHERE id = ?');
   const listOrderItems = db.prepare(`
-    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, mi.name, mi.retail_price AS unit_price
+    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, oi.station, oi.status, mi.name, mi.retail_price AS unit_price
     FROM order_items oi
     JOIN menu_items mi ON mi.id = oi.menu_item_id
     WHERE oi.order_id = ?
     ORDER BY oi.id
   `);
+  const getRollupItemStatuses = db.prepare(
+    `SELECT status FROM order_items WHERE order_id = ? AND station IN (${ROLLUP_STATIONS.map(() => '?').join(', ')})`
+  );
+  const setOrderKitchenStatus = db.prepare('UPDATE orders SET kitchen_status = ? WHERE id = ?');
+  const setAllItemStatus = db.prepare(
+    `UPDATE order_items SET status = ? WHERE order_id = ? AND station IN (${ROLLUP_STATIONS.map(() => '?').join(', ')})`
+  );
+  const setStationItemStatus = db.prepare('UPDATE order_items SET status = ? WHERE order_id = ? AND station = ?');
 
   function serialize(order) {
     return { ...order, items: listOrderItems.all(order.id) };
+  }
+
+  // orders.kitchen_status is a rollup over its non-'none'-station items —
+  // this keeps the order-level field's existing read contract (floor plan,
+  // GET filters, the kitchen page) intact while the actual prep state lives
+  // per item. An order with no kitchen/bar items (e.g. all 'none') rolls up
+  // to 'completed' since nothing is left to track.
+  function recomputeOrderKitchenStatus(orderId) {
+    const items = getRollupItemStatuses.all(orderId, ...ROLLUP_STATIONS);
+    const status = items.length === 0 ? 'completed' : ROLLUP_PRIORITY.find((s) => items.some((i) => i.status === s)) ?? 'completed';
+    setOrderKitchenStatus.run(status, orderId);
+    return status;
   }
 
   // Creates an order and dynamically computes subtotal/tax/total alongside the
@@ -74,6 +99,12 @@ function createOrdersRouter(db) {
         menu_item_id,
         quantity,
         note: typeof note === 'string' && note.trim() !== '' ? note.trim() : null,
+        // Snapshotted at order time so reclassifying a menu item later
+        // (e.g. bar -> kitchen) doesn't rewrite historical tickets. Items
+        // with no station (e.g. a bottled drink) never appear on a display
+        // and are inserted already 'completed'.
+        station: menuItem.station,
+        status: menuItem.station === 'none' ? 'completed' : 'new',
       });
     }
 
@@ -96,7 +127,7 @@ function createOrdersRouter(db) {
       });
 
       for (const item of resolvedItems) {
-        insertOrderItem.run(lastInsertRowid, item.menu_item_id, item.quantity, item.note);
+        insertOrderItem.run(lastInsertRowid, item.menu_item_id, item.quantity, item.note, item.station, item.status);
         // Ingredients are consumed as soon as the kitchen is told to make the
         // item, not when it's paid for. Items with no recipe built yet (the
         // common case until an admin sets one up) simply deduct nothing.
@@ -104,6 +135,7 @@ function createOrdersRouter(db) {
           decrementStock.run(line.quantity_required * item.quantity, line.ingredient_id);
         }
       }
+      recomputeOrderKitchenStatus(lastInsertRowid);
 
       return lastInsertRowid;
     })();
@@ -119,10 +151,25 @@ function createOrdersRouter(db) {
       payment_status: paymentStatusParam,
       table_identifier: tableParam,
       type: typeParam,
+      station: stationParam,
     } = req.query;
 
-    let sql = 'SELECT * FROM orders WHERE 1=1';
+    let sql = 'SELECT DISTINCT o.* FROM orders o';
     const params = [];
+    const conditions = [];
+
+    if (stationParam) {
+      const stations = String(stationParam)
+        .split(',')
+        .filter((s) => VALID_STATIONS.includes(s));
+      if (stations.length) {
+        sql += ' JOIN order_items oi ON oi.order_id = o.id';
+        conditions.push(`oi.station IN (${stations.map(() => '?').join(', ')})`);
+        params.push(...stations);
+      }
+    }
+
+    sql += conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ' WHERE 1=1';
 
     if (typeParam) {
       const types = String(typeParam)
@@ -195,6 +242,12 @@ function createOrdersRouter(db) {
     res.json({ marked: unpaidIds });
   });
 
+  // Legacy/"advance everything" contract, unchanged from before per-item
+  // routing existed — supplying kitchen_status here advances every
+  // kitchen/bar item on the order together, so the existing kitchen page
+  // keeps working with zero changes. A station-aware display should use
+  // PATCH /:id/station-status instead so a mixed order's other station
+  // isn't force-advanced alongside it.
   router.patch('/:id', requireAuth, (req, res) => {
     const id = Number(req.params.id);
     const existing = getOrder.get(id);
@@ -210,11 +263,44 @@ function createOrdersRouter(db) {
       return res.status(400).json({ error: `payment_status must be one of: ${VALID_PAYMENT_STATUSES.join(', ')}` });
     }
 
-    db.prepare('UPDATE orders SET kitchen_status = ?, payment_status = ? WHERE id = ?').run(
-      kitchenStatus ?? existing.kitchen_status,
-      paymentStatus ?? existing.payment_status,
-      id
-    );
+    db.transaction(() => {
+      if (kitchenStatus !== undefined) {
+        setAllItemStatus.run(kitchenStatus, id, ...ROLLUP_STATIONS);
+      }
+      if (paymentStatus !== undefined) {
+        db.prepare('UPDATE orders SET payment_status = ? WHERE id = ?').run(paymentStatus, id);
+      }
+      if (kitchenStatus !== undefined) {
+        recomputeOrderKitchenStatus(id);
+      }
+    })();
+
+    res.json(serialize(getOrder.get(id)));
+  });
+
+  // Station-aware advance — only that order's items matching `station` move,
+  // so a bar-side advance on a mixed food+drink order doesn't touch the
+  // kitchen's items (and vice versa). Feeds the rollup the same as above.
+  router.patch('/:id/station-status', requireAuth, (req, res) => {
+    const id = Number(req.params.id);
+    const existing = getOrder.get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'order not found' });
+    }
+
+    const { station, status } = req.body ?? {};
+    if (!ROLLUP_STATIONS.includes(station)) {
+      return res.status(400).json({ error: `station must be one of: ${ROLLUP_STATIONS.join(', ')}` });
+    }
+    if (!VALID_KITCHEN_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${VALID_KITCHEN_STATUSES.join(', ')}` });
+    }
+
+    db.transaction(() => {
+      setStationItemStatus.run(status, id, station);
+      recomputeOrderKitchenStatus(id);
+    })();
+
     res.json(serialize(getOrder.get(id)));
   });
 

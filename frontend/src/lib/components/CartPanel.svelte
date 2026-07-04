@@ -22,6 +22,17 @@
   $: subtotal = cart.reduce((sum, l) => sum + l.unit_price * l.quantity, 0);
   $: totals = { subtotal, tax: subtotal * $settings.tax_rate, total: subtotal * (1 + $settings.tax_rate) };
   $: itemCount = cart.reduce((n, l) => n + l.quantity, 0);
+  $: kitchenCount = cart.reduce((n, l) => n + ((l.station ?? 'kitchen') === 'kitchen' ? l.quantity : 0), 0);
+  $: barCount = cart.reduce((n, l) => n + (l.station === 'bar' ? l.quantity : 0), 0);
+  // A single Send auto-routes every line by its own station — no separate
+  // "Send to Bar" action — so the button label just reflects the resulting
+  // breakdown.
+  $: sendLabel =
+    kitchenCount > 0 && barCount > 0
+      ? `Send to Kitchen & Bar (${kitchenCount} · ${barCount}) →`
+      : barCount > 0
+        ? `Send to Bar (${barCount}) →`
+        : `Send to Kitchen (${itemCount}) →`;
 
   // The "Customize" sheet merges admin-defined quick-customization chips
   // (e.g. "No pickles") with free-text notes into the one `note` string that
@@ -136,7 +147,7 @@
       disabled={cart.length === 0 || sent || sending}
       on:click={() => dispatch('send')}
     >
-      {sending ? 'Sending…' : sent ? 'Sent to Kitchen ✓' : `Send to Kitchen (${itemCount}) →`}
+      {sending ? 'Sending…' : sent ? 'Sent ✓' : sendLabel}
     </Button>
   </div>
 </div>

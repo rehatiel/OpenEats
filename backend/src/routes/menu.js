@@ -5,6 +5,7 @@ const multer = require('multer');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const ALLOWED_IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+const VALID_STATIONS = ['kitchen', 'bar', 'none'];
 
 // uploadsDir is passed in from index.js, which already knows DB_PATH — images
 // live on the same volume as the SQLite file so they survive restarts with
@@ -30,13 +31,13 @@ function createMenuRouter(db, uploadsDir) {
   });
 
   const listMenuItems = db.prepare(
-    'SELECT id, name, category, retail_price, active, image_url FROM menu_items WHERE active = 1 ORDER BY category, name'
+    'SELECT id, name, category, retail_price, active, image_url, station FROM menu_items WHERE active = 1 ORDER BY category, name'
   );
   const getMenuItem = db.prepare(
-    'SELECT id, name, category, retail_price, active, image_url FROM menu_items WHERE id = ?'
+    'SELECT id, name, category, retail_price, active, image_url, station FROM menu_items WHERE id = ?'
   );
   const insertMenuItem = db.prepare(
-    'INSERT INTO menu_items (name, category, retail_price, active) VALUES (?, ?, ?, 1)'
+    'INSERT INTO menu_items (name, category, retail_price, active, station) VALUES (?, ?, ?, 1, ?)'
   );
   const listOptionsFor = db.prepare('SELECT id, label FROM menu_item_options WHERE menu_item_id = ? ORDER BY sort_order');
   const listAllOptions = db.prepare('SELECT id, menu_item_id, label FROM menu_item_options ORDER BY menu_item_id, sort_order');
@@ -104,7 +105,7 @@ function createMenuRouter(db, uploadsDir) {
   });
 
   router.post('/', requireAuth, requireRole('admin'), (req, res) => {
-    const { name, category, retail_price: retailPrice } = req.body ?? {};
+    const { name, category, retail_price: retailPrice, station } = req.body ?? {};
     if (typeof name !== 'string' || name.trim() === '') {
       return res.status(400).json({ error: 'name is required' });
     }
@@ -114,8 +115,11 @@ function createMenuRouter(db, uploadsDir) {
     if (typeof retailPrice !== 'number' || !Number.isFinite(retailPrice) || retailPrice < 0) {
       return res.status(400).json({ error: 'retail_price must be a non-negative number' });
     }
+    if (station !== undefined && !VALID_STATIONS.includes(station)) {
+      return res.status(400).json({ error: `station must be one of: ${VALID_STATIONS.join(', ')}` });
+    }
 
-    const { lastInsertRowid } = insertMenuItem.run(name.trim(), category.trim(), retailPrice);
+    const { lastInsertRowid } = insertMenuItem.run(name.trim(), category.trim(), retailPrice, station ?? 'kitchen');
     res.status(201).json(withOptions(getMenuItem.get(lastInsertRowid)));
   });
 
@@ -126,7 +130,10 @@ function createMenuRouter(db, uploadsDir) {
       return res.status(404).json({ error: 'menu item not found' });
     }
 
-    const { name, category, retail_price: retailPrice, active } = req.body ?? {};
+    const { name, category, retail_price: retailPrice, active, station } = req.body ?? {};
+    if (station !== undefined && !VALID_STATIONS.includes(station)) {
+      return res.status(400).json({ error: `station must be one of: ${VALID_STATIONS.join(', ')}` });
+    }
     const next = {
       name: typeof name === 'string' && name.trim() !== '' ? name.trim() : existing.name,
       category: typeof category === 'string' && category.trim() !== '' ? category.trim() : existing.category,
@@ -135,13 +142,15 @@ function createMenuRouter(db, uploadsDir) {
           ? retailPrice
           : existing.retail_price,
       active: active !== undefined ? (active ? 1 : 0) : existing.active,
+      station: station ?? existing.station,
     };
 
-    db.prepare('UPDATE menu_items SET name = ?, category = ?, retail_price = ?, active = ? WHERE id = ?').run(
+    db.prepare('UPDATE menu_items SET name = ?, category = ?, retail_price = ?, active = ?, station = ? WHERE id = ?').run(
       next.name,
       next.category,
       next.retail_price,
       next.active,
+      next.station,
       id
     );
     res.json(withOptions(getMenuItem.get(id)));

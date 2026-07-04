@@ -2,9 +2,15 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { apiJson } from '$lib/api';
-  import { auth, logout } from '$lib/stores/auth';
+  import { auth } from '$lib/stores/auth';
   import type { OrderRow, KitchenStatus } from '$lib/orders';
   import TypeBadge from '$lib/components/TypeBadge.svelte';
+  import TopBarNav from '$lib/components/TopBarNav.svelte';
+
+  const navLinks = [
+    { href: '/', label: 'Order' },
+    { href: '/tables', label: 'Tables' },
+  ];
 
   // To-go/delivery orders have no table, so once the kitchen clears them off
   // the KDS (kitchen_status -> 'completed') they'd otherwise vanish from view
@@ -62,20 +68,7 @@
     <div class="text-lg font-extrabold text-counter-ink">Pickup</div>
     <div class="font-mono text-sm text-counter-muted">{orders.length} open</div>
     <div class="flex-1"></div>
-    <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
-    <a href="/tables" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Tables</a>
-    <div class="hidden items-center gap-2 lg:flex">
-      <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-      <button
-        class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink"
-        on:click={() => {
-          logout();
-          goto('/login');
-        }}
-      >
-        Sign out
-      </button>
-    </div>
+    <TopBarNav links={navLinks} />
   </div>
 
   {#if loadError}

@@ -7,6 +7,12 @@ export interface PlatformSettings {
   service_dine_in: boolean;
   service_to_go: boolean;
   service_delivery: boolean;
+  accept_tips: boolean;
+  bar_enabled: boolean;
+  kitchen_printer_enabled: boolean;
+  cc_fee_percent: number;
+  ticket_footer_paid: string;
+  ticket_footer_unpaid: string;
 }
 
 // Fallbacks used only until the real settings load (or if the fetch fails) —
@@ -18,6 +24,12 @@ const DEFAULTS: PlatformSettings = {
   service_dine_in: true,
   service_to_go: true,
   service_delivery: true,
+  accept_tips: false,
+  bar_enabled: false,
+  kitchen_printer_enabled: false,
+  cc_fee_percent: 0,
+  ticket_footer_paid: 'Thank you!',
+  ticket_footer_unpaid: 'Please pay at the counter',
 };
 
 export const settings = writable<PlatformSettings>(DEFAULTS);
@@ -37,6 +49,13 @@ export async function loadSettings(token: string): Promise<void> {
       service_dine_in: raw.service_dine_in !== undefined ? raw.service_dine_in !== '0' : DEFAULTS.service_dine_in,
       service_to_go: raw.service_to_go !== undefined ? raw.service_to_go !== '0' : DEFAULTS.service_to_go,
       service_delivery: raw.service_delivery !== undefined ? raw.service_delivery !== '0' : DEFAULTS.service_delivery,
+      accept_tips: raw.accept_tips !== undefined ? raw.accept_tips !== '0' : DEFAULTS.accept_tips,
+      bar_enabled: raw.bar_enabled !== undefined ? raw.bar_enabled !== '0' : DEFAULTS.bar_enabled,
+      kitchen_printer_enabled:
+        raw.kitchen_printer_enabled !== undefined ? raw.kitchen_printer_enabled !== '0' : DEFAULTS.kitchen_printer_enabled,
+      cc_fee_percent: raw.cc_fee_percent !== undefined ? Number(raw.cc_fee_percent) : DEFAULTS.cc_fee_percent,
+      ticket_footer_paid: raw.ticket_footer_paid ?? DEFAULTS.ticket_footer_paid,
+      ticket_footer_unpaid: raw.ticket_footer_unpaid ?? DEFAULTS.ticket_footer_unpaid,
     });
   } catch {
     // Keep defaults — a failed settings fetch shouldn't block the app.

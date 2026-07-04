@@ -4,6 +4,17 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const SERVICE_TYPE_KEYS = ['service_dine_in', 'service_to_go', 'service_delivery'];
 
 const boolString = (v) => typeof v === 'string' && (v === '0' || v === '1');
+const percentString = (v) => typeof v === 'string' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 1;
+const nonEmptyString = (v) => typeof v === 'string' && v.trim() !== '';
+const validTimezone = (v) => {
+  if (typeof v !== 'string' || v.trim() === '') return false;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: v });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const VALIDATORS = {
   tax_rate: (v) => typeof v === 'string' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 1,
@@ -12,6 +23,13 @@ const VALIDATORS = {
   service_dine_in: boolString,
   service_to_go: boolString,
   service_delivery: boolString,
+  accept_tips: boolString,
+  bar_enabled: boolString,
+  kitchen_printer_enabled: boolString,
+  cc_fee_percent: percentString,
+  ticket_footer_paid: nonEmptyString,
+  ticket_footer_unpaid: nonEmptyString,
+  restaurant_timezone: validTimezone,
 };
 
 function createSettingsRouter(db) {

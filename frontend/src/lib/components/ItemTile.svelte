@@ -9,7 +9,7 @@
 </script>
 
 <button
-  class="overflow-hidden rounded-xl border bg-white text-left transition-shadow {quantityInCart > 0
+  class="overflow-hidden rounded-xl border bg-white text-left transition-transform transition-shadow active:scale-[0.98] {quantityInCart > 0
     ? 'border-[1.5px] border-counter-orange shadow-[0_4px_14px_rgba(239,90,38,0.14)]'
     : 'border-counter-line'}"
   on:click={() => dispatch('add', item)}

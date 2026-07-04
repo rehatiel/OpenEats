@@ -21,6 +21,8 @@
     unit: string;
   }
 
+  type Station = 'kitchen' | 'bar' | 'none';
+
   interface MenuItemRow {
     id: number;
     name: string;
@@ -28,9 +30,16 @@
     retail_price: number;
     active: number;
     image_url: string | null;
+    station: Station;
     options: MenuOptionRow[];
     recipe: RecipeLine[];
   }
+
+  const stationOptions: { key: Station; label: string }[] = [
+    { key: 'kitchen', label: 'Kitchen' },
+    { key: 'bar', label: 'Bar' },
+    { key: 'none', label: 'None' },
+  ];
 
   let items: MenuItemRow[] = [];
   let loading = true;
@@ -41,6 +50,7 @@
   let formName = '';
   let formCategory = '';
   let formPrice = '';
+  let formStation: Station = 'kitchen';
   let formError = '';
   let saving = false;
 
@@ -85,6 +95,7 @@
     formName = '';
     formCategory = categories[0] ?? '';
     formPrice = '';
+    formStation = 'kitchen';
     formError = '';
     imageError = '';
     optionError = '';
@@ -100,6 +111,7 @@
     formName = item.name;
     formCategory = item.category;
     formPrice = String(item.retail_price);
+    formStation = item.station;
     formError = '';
     imageError = '';
     optionError = '';
@@ -136,7 +148,7 @@
 
     saving = true;
     try {
-      const body = { name: formName.trim(), category: formCategory.trim(), retail_price: price };
+      const body = { name: formName.trim(), category: formCategory.trim(), retail_price: price, station: formStation };
       if (editing) {
         await apiJson(`/api/menu/${editing.id}`, { method: 'PUT', body: JSON.stringify(body) });
         formOpen = false;
@@ -333,6 +345,25 @@
         class="mb-4 h-11 rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-[15px] text-counter-ink"
         bind:value={formPrice}
       />
+
+      <div id="menu-station-label" class="mb-1 text-xs font-bold uppercase tracking-wide text-counter-muted">
+        Send to
+      </div>
+      <div class="mb-4 flex gap-2" role="group" aria-labelledby="menu-station-label">
+        {#each stationOptions as opt (opt.key)}
+          <button
+            class="h-10 flex-1 rounded-lg text-sm font-bold {formStation === opt.key
+              ? 'bg-counter-ink text-white'
+              : 'bg-counter-paper text-counter-muted-2'}"
+            on:click={() => (formStation = opt.key)}
+          >
+            {opt.label}
+          </button>
+        {/each}
+      </div>
+      <div class="mb-4 font-mono text-[11px] text-counter-faint">
+        "None" is for items like bottled drinks that need no prep station but are still tracked in reporting.
+      </div>
 
       {#if formError}
         <div class="mb-3 text-sm font-semibold text-counter-orange-dark">{formError}</div>

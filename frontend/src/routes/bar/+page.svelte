@@ -7,13 +7,12 @@
   import type { OrderRow } from '$lib/orders';
   import { toTicket, stationStatus, nextItemStatus } from '$lib/kds';
 
-  $: navLinks = $auth.user?.role !== 'kitchen' ? [{ href: '/', label: 'Exit ↗' }] : [];
+  const STATION = 'bar' as const;
+  const navLinks = [{ href: '/', label: 'Exit ↗' }];
 
-  const STATION = 'kitchen' as const;
-
-  // Tickets are real orders polled from the backend — not local component
-  // state — so "advance" always writes through the server before the rail
-  // reflects it (avoids a fast poll clobbering an optimistic local update).
+  // Same real-orders-polled-from-the-backend approach as the Kitchen
+  // Display (see frontend/src/routes/kitchen/+page.svelte) — "advance"
+  // always writes through the server first.
   let orders: OrderRow[] = [];
   let filter: 'all' | 'dine_in' | 'to_go' | 'delivery' = 'all';
   let now = '';
@@ -24,16 +23,16 @@
 
   async function loadOrders() {
     try {
-      const fetched = await apiJson<OrderRow[]>('/api/orders?station=kitchen&kitchen_status=new,cooking,ready');
-      // The kitchen_status query param is the order-level rollup across BOTH
-      // stations — a mixed order whose kitchen items are all done but whose
-      // bar item is still pending would still match it. Filter again here
-      // using the station-specific status so a ticket with nothing left for
-      // the kitchen to do doesn't linger on this board.
+      const fetched = await apiJson<OrderRow[]>('/api/orders?station=bar&kitchen_status=new,cooking,ready');
+      // kitchen_status is the order-level rollup across BOTH stations — a
+      // mixed order whose bar item is done but whose kitchen items are
+      // still pending would still match it. Filter again using the
+      // station-specific status so a ticket with nothing left for the bar
+      // to do doesn't linger here.
       orders = fetched.filter((o) => stationStatus(o, STATION) !== 'completed');
       loadError = '';
     } catch (e) {
-      loadError = e instanceof Error ? e.message : 'Failed to load kitchen tickets';
+      loadError = e instanceof Error ? e.message : 'Failed to load bar tickets';
     }
   }
 
@@ -57,8 +56,7 @@
     const pollId = setInterval(loadOrders, POLL_MS);
     const tickId = setInterval(() => (nowTick = Date.now()), 1000);
 
-    const updateClock = () =>
-      (now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    const updateClock = () => (now = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
     updateClock();
     const clockId = setInterval(updateClock, 1000 * 30);
 
@@ -83,13 +81,13 @@
 </script>
 
 <svelte:head>
-  <title>Kitchen · OpenEats</title>
+  <title>Bar · OpenEats</title>
 </svelte:head>
 
 <div class="flex h-screen w-full flex-col overflow-hidden bg-kds-bg text-kds-text">
   <!-- top bar -->
   <div class="flex h-[72px] flex-none items-center gap-5 border-b border-kds-border px-5">
-    <div class="text-xl font-black tracking-tight sm:text-[22px]">KITCHEN</div>
+    <div class="text-xl font-black tracking-tight sm:text-[22px]">BAR</div>
 
     <div class="flex items-center gap-2 rounded-lg border border-kds-border bg-kds-card-2 px-3 py-1.5">
       <span class="font-mono text-lg font-extrabold text-kds-cooking sm:text-xl">{activeCount}</span>

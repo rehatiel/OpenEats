@@ -27,6 +27,8 @@
   // whatever seat count is already configured for the table, rather than a
   // generic guest counter.
   export let tableSeats = 2;
+  export let acceptTips = false;
+  export let ccFeePercent = 0;
 
   const dispatch = createEventDispatcher<{ settled: void }>();
 
@@ -51,6 +53,10 @@
   let chargeError = '';
   let charging = false;
   let sessionCollected = 0;
+
+  let chargeTipPct: number | null = 0;
+  let chargeCustomTip = '';
+  const chargeTipPresets = [0, 15, 18, 20];
 
   function addGuest() {
     guests = [...guests, { id: nextGuestId++, label: `Seat ${guests.length + 1}`, paid: false }];
@@ -92,12 +98,23 @@
   $: chargingBreakdown = guestBreakdown.find((b) => b.guest.id === chargingGuestId);
   $: chargingTotal = chargingBreakdown ? Math.min(Math.round(chargingBreakdown.total * 100) / 100, remainingPool) : 0;
 
+  $: chargeTipAmount =
+    chargeTipPct !== null ? Math.round(chargingTotal * (chargeTipPct / 100) * 100) / 100 : Number(chargeCustomTip) || 0;
+  $: chargeCardFeeAmount =
+    chargeTenderType === 'card' && ccFeePercent > 0 ? Math.round(chargingTotal * ccFeePercent * 100) / 100 : 0;
+  $: chargingTotalWithExtras = chargingTotal + chargeTipAmount + chargeCardFeeAmount;
+
   // Tendered/change-due, mirroring the main checkout tender panel exactly.
-  $: tendered = entry ? Number(entry) : Math.ceil(chargingTotal / 10) * 10 + 10;
-  $: changeDue = Math.max(0, tendered - chargingTotal);
-  $: canCharge = chargingTotal > 0 && tendered >= chargingTotal;
-  $: chargeBase10 = Math.ceil(chargingTotal / 10) * 10;
-  $: quickCash = [Math.ceil(chargingTotal), Math.ceil(chargingTotal / 5) * 5, chargeBase10 + 10, chargeBase10 + 20];
+  $: tendered = entry ? Number(entry) : Math.ceil(chargingTotalWithExtras / 10) * 10 + 10;
+  $: changeDue = Math.max(0, tendered - chargingTotalWithExtras);
+  $: canCharge = chargingTotal > 0 && tendered >= chargingTotalWithExtras;
+  $: chargeBase10 = Math.ceil(chargingTotalWithExtras / 10) * 10;
+  $: quickCash = [
+    Math.ceil(chargingTotalWithExtras),
+    Math.ceil(chargingTotalWithExtras / 5) * 5,
+    chargeBase10 + 10,
+    chargeBase10 + 20,
+  ];
 
   function startCharge(guestId: number) {
     const breakdown = guestBreakdown.find((b) => b.guest.id === guestId);
@@ -106,6 +123,8 @@
     entry = '';
     chargeTenderType = 'cash';
     chargeError = '';
+    chargeTipPct = 0;
+    chargeCustomTip = '';
   }
 
   function pressKey(k: string) {
@@ -143,6 +162,9 @@
             share: l.share,
             line_total: l.lineTotal,
           })),
+          tip_amount: chargeTipAmount,
+          cash_amount: chargeTenderType === 'cash' ? total : 0,
+          card_amount: chargeTenderType === 'card' ? total : 0,
         }),
       });
       guests = guests.map((g) => (g.id === chargingGuestId ? { ...g, paid: true } : g));
@@ -274,11 +296,51 @@
           {/each}
         </div>
 
+        {#if acceptTips}
+          <div class="mb-3">
+            <div class="mb-1.5 text-xs font-bold uppercase tracking-wide text-counter-muted">Tip</div>
+            <div class="grid grid-cols-4 gap-2">
+              {#each chargeTipPresets as pct}
+                <button
+                  class="h-9 rounded-lg text-sm font-bold {chargeTipPct === pct
+                    ? 'bg-counter-ink text-white'
+                    : 'bg-counter-paper text-counter-ink'}"
+                  on:click={() => {
+                    chargeTipPct = pct;
+                    chargeCustomTip = '';
+                  }}
+                >
+                  {pct}%
+                </button>
+              {/each}
+            </div>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Custom tip $"
+              class="mt-2 h-9 w-full rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-sm text-counter-ink"
+              bind:value={chargeCustomTip}
+              on:input={() => (chargeTipPct = null)}
+            />
+          </div>
+        {/if}
+
         <div class="mb-3 rounded-xl border border-[#E7E0D1] bg-counter-cream p-4">
           <div class="flex items-baseline justify-between">
             <span class="text-sm font-semibold text-counter-muted">Owed</span>
             <span class="font-mono text-lg font-extrabold text-counter-ink">${chargingTotal.toFixed(2)}</span>
           </div>
+          {#if chargeTipAmount > 0}
+            <div class="flex items-baseline justify-between text-sm text-counter-muted-2">
+              <span>Tip</span><span class="font-mono">${chargeTipAmount.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if chargeCardFeeAmount > 0}
+            <div class="flex items-baseline justify-between text-sm text-counter-muted-2">
+              <span>Card fee</span><span class="font-mono">${chargeCardFeeAmount.toFixed(2)}</span>
+            </div>
+          {/if}
           <div class="my-2 border-t border-dashed border-counter-dashed"></div>
           <div class="flex items-baseline justify-between">
             <span class="text-sm font-semibold text-counter-muted">Tendered</span>

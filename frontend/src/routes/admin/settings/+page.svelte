@@ -11,6 +11,12 @@
   let serviceDineIn = true;
   let serviceToGo = true;
   let serviceDelivery = true;
+  let acceptTips = false;
+  let barEnabled = false;
+  let kitchenPrinterEnabled = false;
+  let ccFeePct = '';
+  let ticketFooterPaid = '';
+  let ticketFooterUnpaid = '';
   let loading = true;
   let loadError = '';
   let saveError = '';
@@ -23,11 +29,27 @@
   let clearError = '';
   let cleared = false;
 
+  // Transaction-history danger zone (separate from demo-data above — this
+  // wipes orders/payments, not menu/tables).
+  let confirmTextTx = '';
+  let clearingTx = false;
+  let clearErrorTx = '';
+  let clearedTx = false;
+
   $: enabledServiceCount = [serviceDineIn, serviceToGo, serviceDelivery].filter(Boolean).length;
   $: serviceRows = [
     { key: 'dine_in' as const, label: 'Dine in', value: serviceDineIn },
     { key: 'to_go' as const, label: 'To go', value: serviceToGo },
     { key: 'delivery' as const, label: 'Delivery', value: serviceDelivery },
+  ];
+
+  // These toggles don't have the "at least one must stay on" rule the
+  // service-type rows do, so they use a separate, simpler flag/toggle pair
+  // rather than overloading toggleService.
+  $: flagRows = [
+    { key: 'accept_tips' as const, label: 'Accept tips', value: acceptTips },
+    { key: 'bar_enabled' as const, label: 'Bar', value: barEnabled },
+    { key: 'kitchen_printer_enabled' as const, label: 'Kitchen printer', value: kitchenPrinterEnabled },
   ];
 
   async function load() {
@@ -40,6 +62,12 @@
       serviceDineIn = raw.service_dine_in !== '0';
       serviceToGo = raw.service_to_go !== '0';
       serviceDelivery = raw.service_delivery !== '0';
+      acceptTips = raw.accept_tips === '1';
+      barEnabled = raw.bar_enabled === '1';
+      kitchenPrinterEnabled = raw.kitchen_printer_enabled === '1';
+      ccFeePct = raw.cc_fee_percent ? String(Number(raw.cc_fee_percent) * 100) : '0';
+      ticketFooterPaid = raw.ticket_footer_paid ?? 'Thank you!';
+      ticketFooterUnpaid = raw.ticket_footer_unpaid ?? 'Please pay at the counter';
       loadError = '';
     } catch (e) {
       loadError = e instanceof Error ? e.message : 'Failed to load settings';
@@ -57,6 +85,12 @@
     if (which === 'delivery') serviceDelivery = value;
   }
 
+  function toggleFlag(which: 'accept_tips' | 'bar_enabled' | 'kitchen_printer_enabled', value: boolean) {
+    if (which === 'accept_tips') acceptTips = value;
+    if (which === 'bar_enabled') barEnabled = value;
+    if (which === 'kitchen_printer_enabled') kitchenPrinterEnabled = value;
+  }
+
   onMount(load);
 
   async function save() {
@@ -65,6 +99,7 @@
 
     const taxRate = Number(taxRatePct) / 100;
     const idleMinutes = Number(idleTimeoutMinutes);
+    const ccFeeRate = Number(ccFeePct) / 100;
     if (!restaurantName.trim()) {
       saveError = 'Restaurant name is required';
       return;
@@ -75,6 +110,14 @@
     }
     if (!Number.isInteger(idleMinutes) || idleMinutes <= 0) {
       saveError = 'Idle timeout must be a positive whole number of minutes';
+      return;
+    }
+    if (!Number.isFinite(ccFeeRate) || ccFeeRate < 0 || ccFeeRate > 1) {
+      saveError = 'Card processing fee must be a percentage between 0 and 100';
+      return;
+    }
+    if (!ticketFooterPaid.trim() || !ticketFooterUnpaid.trim()) {
+      saveError = 'Both ticket messages are required';
       return;
     }
 
@@ -89,6 +132,12 @@
           service_dine_in: serviceDineIn ? '1' : '0',
           service_to_go: serviceToGo ? '1' : '0',
           service_delivery: serviceDelivery ? '1' : '0',
+          accept_tips: acceptTips ? '1' : '0',
+          bar_enabled: barEnabled ? '1' : '0',
+          kitchen_printer_enabled: kitchenPrinterEnabled ? '1' : '0',
+          cc_fee_percent: ccFeeRate,
+          ticket_footer_paid: ticketFooterPaid.trim(),
+          ticket_footer_unpaid: ticketFooterUnpaid.trim(),
         }),
       });
       saved = true;
@@ -113,6 +162,24 @@
       clearError = e instanceof Error ? e.message : 'Failed to clear demo data';
     } finally {
       clearing = false;
+    }
+  }
+
+  async function clearTransactionHistory() {
+    if (confirmTextTx.trim() !== restaurantName.trim()) return;
+    clearingTx = true;
+    clearErrorTx = '';
+    try {
+      await apiJson('/api/admin/clear-transaction-history', {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: true }),
+      });
+      clearedTx = true;
+      confirmTextTx = '';
+    } catch (e) {
+      clearErrorTx = e instanceof Error ? e.message : 'Failed to clear transaction history';
+    } finally {
+      clearingTx = false;
     }
   }
 </script>
@@ -185,6 +252,60 @@
       </div>
       <div class="mb-6 text-xs text-counter-muted">A food truck with no seating, for example, can turn Dine in off — Order Entry and navigation adjust to match. At least one type must stay on.</div>
 
+      <div class="mb-1 block text-xs font-bold uppercase tracking-wide text-counter-muted">Features</div>
+      <div class="mb-6 space-y-2">
+        {#each flagRows as row (row.key)}
+          <div class="flex items-center justify-between rounded-lg border border-counter-line bg-counter-paper px-3 py-2">
+            <span class="text-[15px] font-semibold text-counter-ink">{row.label}</span>
+            <div class="flex gap-2">
+              <button
+                class="h-9 rounded-lg px-3 text-sm font-bold {row.value ? 'bg-counter-ink text-white' : 'bg-white text-counter-muted-2'}"
+                on:click={() => toggleFlag(row.key, true)}
+              >
+                On
+              </button>
+              <button
+                class="h-9 rounded-lg px-3 text-sm font-bold {!row.value ? 'bg-counter-ink text-white' : 'bg-white text-counter-muted-2'}"
+                on:click={() => toggleFlag(row.key, false)}
+              >
+                Off
+              </button>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <label for="settings-cc-fee" class="mb-1 block text-xs font-bold uppercase tracking-wide text-counter-muted">
+        Card processing fee (%)
+      </label>
+      <input
+        id="settings-cc-fee"
+        type="number"
+        step="0.01"
+        min="0"
+        max="100"
+        class="mb-5 h-11 w-full rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-[15px] text-counter-ink"
+        bind:value={ccFeePct}
+      />
+
+      <label for="settings-footer-paid" class="mb-1 block text-xs font-bold uppercase tracking-wide text-counter-muted">
+        Receipt message (paid)
+      </label>
+      <input
+        id="settings-footer-paid"
+        class="mb-5 h-11 w-full rounded-lg border border-counter-line bg-counter-paper px-3 text-[15px] text-counter-ink"
+        bind:value={ticketFooterPaid}
+      />
+
+      <label for="settings-footer-unpaid" class="mb-1 block text-xs font-bold uppercase tracking-wide text-counter-muted">
+        Bill message (unpaid)
+      </label>
+      <input
+        id="settings-footer-unpaid"
+        class="mb-6 h-11 w-full rounded-lg border border-counter-line bg-counter-paper px-3 text-[15px] text-counter-ink"
+        bind:value={ticketFooterUnpaid}
+      />
+
       {#if loadError}
         <div class="mb-4 text-sm font-semibold text-counter-orange-dark">{loadError}</div>
       {/if}
@@ -231,6 +352,37 @@
           on:click={clearDemoData}
         >
           {clearing ? 'Clearing…' : 'Clear demo data'}
+        </button>
+      {/if}
+    </div>
+
+    <div class="mt-6 rounded-2xl border border-[#F5C2A6] bg-[#FEF0E9] p-6">
+      <div class="mb-1 text-[15px] font-extrabold text-[#C2410C]">Clear transaction history</div>
+      <p class="mb-4 text-sm text-[#9A3412]">
+        Permanently deletes every order, order item, guest payment, and purchase order — this is what resets the
+        Dashboard and reports to zero. Your menu, tables, ingredients, vendors, users, and settings are not
+        affected. Ingredient stock levels consumed by deleted orders are not restored. This cannot be undone.
+      </p>
+      {#if clearedTx}
+        <div class="mb-3 text-sm font-semibold text-[#9A3412]">Done — all transaction history has been cleared.</div>
+      {:else}
+        <label for="settings-confirm-tx" class="mb-1 block text-xs font-bold uppercase tracking-wide text-[#9A3412]">
+          Type "{restaurantName}" to confirm
+        </label>
+        <input
+          id="settings-confirm-tx"
+          class="mb-3 h-11 w-full rounded-lg border border-[#F5C2A6] bg-white px-3 text-[15px] text-counter-ink"
+          bind:value={confirmTextTx}
+        />
+        {#if clearErrorTx}
+          <div class="mb-3 text-sm font-semibold text-[#C2410C]">{clearErrorTx}</div>
+        {/if}
+        <button
+          class="h-11 w-full rounded-lg bg-[#C2410C] text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={clearingTx || confirmTextTx.trim() !== restaurantName.trim()}
+          on:click={clearTransactionHistory}
+        >
+          {clearingTx ? 'Clearing…' : 'Clear transaction history'}
         </button>
       {/if}
     </div>

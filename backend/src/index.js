@@ -15,6 +15,7 @@ const { createVendorsRouter } = require('./routes/vendors');
 const { createPurchaseOrdersRouter } = require('./routes/purchaseOrders');
 const { createAdminRouter } = require('./routes/admin');
 const { createGuestPaymentsRouter } = require('./routes/guestPayments');
+const { createReportsRouter } = require('./routes/reports');
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || './data/openeats.db';
@@ -43,6 +44,7 @@ app.use('/api/vendors', createVendorsRouter(db));
 app.use('/api/purchase-orders', createPurchaseOrdersRouter(db));
 app.use('/api/admin', createAdminRouter(db));
 app.use('/api/guest-payments', createGuestPaymentsRouter(db));
+app.use('/api/reports', createReportsRouter(db));
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

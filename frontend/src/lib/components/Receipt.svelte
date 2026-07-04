@@ -11,6 +11,10 @@
   // false renders a pre-payment bill ("Amount Due") instead of a paid
   // receipt ("Thank you!") — used by Checkout's Print Bill action.
   export let settled = true;
+  export let tipAmount = 0;
+  export let cardFee = 0;
+  export let paidMessage = 'Thank you!';
+  export let billMessage = 'Please pay at the counter';
 </script>
 
 <!--
@@ -39,11 +43,17 @@
 
   <div class="flex justify-between"><span>Subtotal</span><span>${totals.subtotal.toFixed(2)}</span></div>
   <div class="flex justify-between"><span>Tax ({(taxRate * 100).toFixed(2)}%)</span><span>${totals.tax.toFixed(2)}</span></div>
+  {#if cardFee > 0}
+    <div class="flex justify-between"><span>Card processing fee</span><span>${cardFee.toFixed(2)}</span></div>
+  {/if}
+  {#if tipAmount > 0}
+    <div class="flex justify-between"><span>Tip</span><span>${tipAmount.toFixed(2)}</span></div>
+  {/if}
   <div class="mt-1 flex justify-between text-base font-extrabold">
-    <span>{settled ? 'Total' : 'Amount Due'}</span><span>${totals.total.toFixed(2)}</span>
+    <span>{settled ? 'Total' : 'Amount Due'}</span><span>${(totals.total + cardFee + tipAmount).toFixed(2)}</span>
   </div>
 
   <div class="my-2 border-t border-dashed border-black"></div>
 
-  <div class="text-center">{settled ? 'Thank you!' : 'Please pay at the counter'}</div>
+  <div class="text-center">{settled ? paidMessage : billMessage}</div>
 </div>

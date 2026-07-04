@@ -2,9 +2,15 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { apiJson } from '$lib/api';
-  import { auth, logout } from '$lib/stores/auth';
+  import { auth } from '$lib/stores/auth';
   import { groupOrdersByTable } from '$lib/orders';
   import type { OrderRow } from '$lib/orders';
+  import TopBarNav from '$lib/components/TopBarNav.svelte';
+
+  const navLinks = [
+    { href: '/', label: 'Order' },
+    { href: '/tables', label: 'Tables' },
+  ];
 
   interface TableEntry {
     label: string;
@@ -84,20 +90,7 @@
   <div class="flex h-16 flex-none items-center gap-4 border-b border-counter-line bg-white px-4 sm:px-5">
     <div class="text-lg font-extrabold text-counter-ink">Register</div>
     <div class="flex-1"></div>
-    <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
-    <a href="/tables" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Tables</a>
-    <div class="hidden items-center gap-2 lg:flex">
-      <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-      <button
-        class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink"
-        on:click={() => {
-          logout();
-          goto('/login');
-        }}
-      >
-        Sign out
-      </button>
-    </div>
+    <TopBarNav links={navLinks} />
   </div>
 
   <div class="flex-1 overflow-y-auto p-4 sm:p-6">

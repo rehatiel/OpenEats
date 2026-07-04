@@ -2,7 +2,10 @@
 // the floor plan (/tables) and Order Entry's table picker need from it —
 // kept in one place so the two surfaces can never disagree about what
 // "occupied" or "needs bill" means.
-import type { OrderType, TableStatus } from './mockData';
+import type { OrderType, TableStatus, Station } from './mockData';
+
+export type { Station };
+export type ItemStatus = 'new' | 'cooking' | 'ready' | 'completed';
 
 export interface OrderItemRow {
   id: number;
@@ -11,6 +14,48 @@ export interface OrderItemRow {
   note: string | null;
   name: string;
   unit_price: number;
+  station: Station;
+  status: ItemStatus;
+}
+
+// Table layout row shape returned by GET /api/tables, shared by the floor
+// plan, its admin drag-and-drop editor, and the order-screen table picker so
+// they can't drift out of sync on what fields exist. A non-null
+// parent_table_id marks a generated seat (see POST /api/tables/:id/seats) —
+// an otherwise completely ordinary, independently-orderable table row.
+export interface TableLayoutRow {
+  id: number;
+  label: string;
+  seats: number;
+  shape: 'square' | 'round';
+  pos_x: number;
+  pos_y: number;
+  width: number;
+  height: number;
+  sort_order: number;
+  // Raw wire value from SQLite (0/1), same convention as `active` elsewhere.
+  orderable: number;
+  parent_table_id: number | null;
+}
+
+// Buckets a table layout into top-level tables and a lookup of seat rows
+// generated under each parent — so the floor plan, its admin editor, and the
+// order-screen table picker never disagree about which rows are "real"
+// tables vs. generated seats.
+export function groupTablesByParent(layout: TableLayoutRow[]): {
+  parents: TableLayoutRow[];
+  seatsByParent: Record<number, TableLayoutRow[]>;
+} {
+  const seatsByParent: Record<number, TableLayoutRow[]> = {};
+  const parents: TableLayoutRow[] = [];
+  for (const row of layout) {
+    if (row.parent_table_id != null) {
+      (seatsByParent[row.parent_table_id] ??= []).push(row);
+    } else {
+      parents.push(row);
+    }
+  }
+  return { parents, seatsByParent };
 }
 
 export type KitchenStatus = 'new' | 'cooking' | 'ready' | 'completed';

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { DASHBOARD_KPIS, DASHBOARD_WEEK, MARGIN_TABLE } from '$lib/mockData';
   import { apiJson } from '$lib/api';
-  import { auth, logout } from '$lib/stores/auth';
+  import { auth } from '$lib/stores/auth';
   import { settings } from '$lib/stores/settings';
   import KpiCard from '$lib/components/KpiCard.svelte';
+  import TopBarNav from '$lib/components/TopBarNav.svelte';
 
   let range: 'today' | 'week' | 'month' = 'week';
   const ranges: { key: typeof range; label: string }[] = [
@@ -15,10 +15,65 @@
   ];
 
   const fmt = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  const fmtPct = (n: number) => `${n.toFixed(1)}%`;
 
-  // The KPI row and margin table above/below this card are still the
-  // original mockup numbers — only low stock is wired to real inventory,
-  // since that's what "build restock list" actually needs.
+  interface DashboardResponse {
+    range: { key: string; start: string; end: string };
+    kpis: {
+      grossSales: number;
+      grossSalesDeltaPct: number | null;
+      foodCost: number;
+      foodCostPct: number;
+      grossProfit: number;
+      grossProfitMarginPct: number;
+      orders: number;
+      avgTicket: number;
+    };
+    week: { date: string; label: string; sales: number; foodCost: number }[];
+    marginTable: { id: number; name: string; price: number; foodCost: number; sold: number; marginPct: number }[];
+    tipsByServer: { server: string; cashTips: number; cardTips: number; totalTips: number }[];
+  }
+
+  let dashboard: DashboardResponse | null = null;
+  let dashboardLoaded = false;
+  let dashboardError = '';
+
+  // Bar heights are normalized client-side against the range's own peak day
+  // — the API returns raw sales/food-cost numbers, not pre-scaled
+  // percentages, since that's a presentation concern.
+  $: weekPeak = Math.max(1, ...(dashboard?.week ?? []).flatMap((d) => [d.sales, d.foodCost]));
+  $: weekBars = (dashboard?.week ?? []).map((d) => ({
+    label: d.label,
+    salesPct: (d.sales / weekPeak) * 100,
+    foodCostPct: (d.foodCost / weekPeak) * 100,
+  }));
+
+  $: navLinks = [
+    { href: '/', label: 'Order' },
+    ...($settings.service_dine_in ? [{ href: '/register', label: 'Register' }] : []),
+    ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
+    ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),
+  ];
+
+  $: dateRangeLabel = dashboard
+    ? `${new Date(dashboard.range.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(
+        dashboard.range.end
+      ).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+    : '';
+
+  async function loadDashboard() {
+    dashboardError = '';
+    try {
+      dashboard = await apiJson<DashboardResponse>(`/api/reports/dashboard?range=${range}`);
+    } catch (e) {
+      dashboardError = e instanceof Error ? e.message : 'Failed to load dashboard';
+    } finally {
+      dashboardLoaded = true;
+    }
+  }
+
+  $: range, loadDashboard();
+
   interface IngredientRow {
     id: number;
     name: string;
@@ -69,38 +124,36 @@
         </button>
       {/each}
     </div>
-    <div class="hidden font-mono text-sm text-counter-muted sm:block">Jun 26 – Jul 2</div>
-    <a href="/" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Order</a>
-    {#if $settings.service_dine_in}
-      <a href="/register" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Register</a>
-    {/if}
-    {#if $auth.user?.role === 'admin'}
-      <a href="/admin/users" class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink">Admin</a>
-    {/if}
-    <div class="hidden items-center gap-2 lg:flex">
-      <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-      <button
-        class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink"
-        on:click={() => {
-          logout();
-          goto('/login');
-        }}
-      >
-        Sign out
-      </button>
-    </div>
+    <div class="hidden font-mono text-sm text-counter-muted sm:block">{dateRangeLabel}</div>
+    <TopBarNav links={navLinks} />
   </div>
 
   <div class="flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
+    {#if dashboardError}
+      <div class="rounded-lg bg-[#FEF0E9] px-4 py-2.5 text-sm font-semibold text-[#C2410C]">{dashboardError}</div>
+    {/if}
+
     <!-- KPI row -->
     <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
-      <KpiCard label="Gross sales" value={fmt(DASHBOARD_KPIS.grossSales)} sub={`▲ ${DASHBOARD_KPIS.grossSalesDelta}`} subColor="text-counter-paid" />
-      <KpiCard label="Food cost" value={fmt(DASHBOARD_KPIS.foodCost)} sub={DASHBOARD_KPIS.foodCostPct} subColor="text-[#C2410C]" />
-      <KpiCard label="Gross profit" value={fmt(DASHBOARD_KPIS.grossProfit)} sub={DASHBOARD_KPIS.grossProfitMargin} inverted />
+      <KpiCard
+        label="Gross sales"
+        value={fmt(dashboard?.kpis.grossSales ?? 0)}
+        sub={dashboard?.kpis.grossSalesDeltaPct != null
+          ? `${dashboard.kpis.grossSalesDeltaPct >= 0 ? '▲' : '▼'} ${fmtPct(Math.abs(dashboard.kpis.grossSalesDeltaPct))} vs last period`
+          : 'No prior-period data'}
+        subColor="text-counter-paid"
+      />
+      <KpiCard label="Food cost" value={fmt(dashboard?.kpis.foodCost ?? 0)} sub={`${fmtPct(dashboard?.kpis.foodCostPct ?? 0)} of sales`} subColor="text-[#C2410C]" />
+      <KpiCard
+        label="Gross profit"
+        value={fmt(dashboard?.kpis.grossProfit ?? 0)}
+        sub={`${fmtPct(dashboard?.kpis.grossProfitMarginPct ?? 0)} margin`}
+        inverted
+      />
       <KpiCard
         label="Orders"
-        value={DASHBOARD_KPIS.orders.toLocaleString()}
-        sub={`$${DASHBOARD_KPIS.avgTicket.toFixed(2)} avg ticket`}
+        value={(dashboard?.kpis.orders ?? 0).toLocaleString()}
+        sub={`$${(dashboard?.kpis.avgTicket ?? 0).toFixed(2)} avg ticket`}
       />
     </div>
 
@@ -109,14 +162,14 @@
       <!-- bar chart -->
       <div class="rounded-2xl border border-counter-line bg-white p-5">
         <div class="mb-4 flex items-center justify-between">
-          <div class="text-[15px] font-bold text-counter-ink">Sales vs. food cost</div>
+          <div class="text-[15px] font-bold text-counter-ink">Sales vs. food cost (last 7 days)</div>
           <div class="flex items-center gap-4 text-xs font-semibold text-counter-muted-2">
             <span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm bg-counter-ink"></span>Sales</span>
             <span class="flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm bg-counter-orange"></span>Food cost</span>
           </div>
         </div>
         <div class="flex h-40 items-end justify-between gap-3">
-          {#each DASHBOARD_WEEK as day (day.label)}
+          {#each weekBars as day, i (i)}
             <div class="flex flex-1 flex-col items-center gap-1.5">
               <div class="flex h-32 w-full items-end justify-center gap-1">
                 <div class="w-5 rounded-t bg-counter-ink" style="height: {day.salesPct}%"></div>
@@ -180,7 +233,10 @@
         <div>Sold</div>
         <div>Margin</div>
       </div>
-      {#each MARGIN_TABLE as row}
+      {#if dashboardLoaded && (dashboard?.marginTable ?? []).length === 0}
+        <div class="py-4 text-sm text-counter-muted">No sales in this period yet.</div>
+      {/if}
+      {#each dashboard?.marginTable ?? [] as row (row.id)}
         <div class="grid grid-cols-[2fr_1fr_1fr_1fr_1.4fr] items-center gap-2 border-b border-counter-paper py-3 text-[15px]">
           <div class="font-semibold text-counter-ink">{row.name}</div>
           <div class="font-mono text-counter-muted-2">${row.price.toFixed(2)}</div>
@@ -194,11 +250,35 @@
               ></div>
             </div>
             <span class="font-mono text-sm font-extrabold {row.marginPct >= 60 ? 'text-counter-paid' : 'text-[#A16207]'}">
-              {row.marginPct}%
+              {row.marginPct.toFixed(0)}%
             </span>
           </div>
         </div>
       {/each}
     </div>
+
+    {#if $settings.accept_tips}
+      <!-- tips by server -->
+      <div class="rounded-2xl border border-counter-line bg-white p-5">
+        <div class="mb-4 text-[15px] font-bold text-counter-ink">Tips by server &amp; payment method</div>
+        <div class="grid grid-cols-[2fr_1fr_1fr_1fr] gap-2 border-b border-counter-paper pb-3 text-xs font-bold uppercase tracking-wide text-counter-muted">
+          <div>Server</div>
+          <div>Cash</div>
+          <div>Card</div>
+          <div>Total</div>
+        </div>
+        {#if dashboardLoaded && (dashboard?.tipsByServer ?? []).length === 0}
+          <div class="py-4 text-sm text-counter-muted">No tips recorded in this period yet.</div>
+        {/if}
+        {#each dashboard?.tipsByServer ?? [] as row (row.server)}
+          <div class="grid grid-cols-[2fr_1fr_1fr_1fr] items-center gap-2 border-b border-counter-paper py-3 text-[15px]">
+            <div class="font-semibold text-counter-ink">{row.server}</div>
+            <div class="font-mono text-counter-muted-2">${row.cashTips.toFixed(2)}</div>
+            <div class="font-mono text-counter-muted-2">${row.cardTips.toFixed(2)}</div>
+            <div class="font-mono font-extrabold text-counter-ink">${row.totalTips.toFixed(2)}</div>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>
