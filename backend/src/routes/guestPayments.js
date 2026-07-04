@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
+const { createOrderTotalsHelper } = require('../lib/orderTotals');
 
 const VALID_TENDER_TYPES = ['cash', 'card', 'split'];
 
@@ -11,6 +12,7 @@ const VALID_TENDER_TYPES = ['cash', 'card', 'split'];
 // already-collected split payments.
 function createGuestPaymentsRouter(db) {
   const router = express.Router();
+  const { computeNetTotals } = createOrderTotalsHelper(db);
 
   const insertPayment = db.prepare(`
     INSERT INTO guest_payments
@@ -29,8 +31,19 @@ function createGuestPaymentsRouter(db) {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(', ');
     return db
-      .prepare(`SELECT id, total, payment_status, server_name FROM orders WHERE id IN (${placeholders})`)
+      .prepare(`SELECT id, subtotal, tax, total, payment_status, server_name FROM orders WHERE id IN (${placeholders})`)
       .all(...ids);
+  }
+
+  // Sum of guest_payments already recorded toward any of these order_ids —
+  // the same "already collected toward these specific orders" definition
+  // used below to decide `settled`, computed here up front so a payment
+  // can't be accepted for more than what's actually still owed.
+  function collectedTowardOrders(tableIdentifier, orderIds) {
+    return listByTable
+      .all(tableIdentifier)
+      .filter((row) => JSON.parse(row.order_ids).some((id) => orderIds.includes(id)))
+      .reduce((sum, row) => sum + row.total, 0);
   }
 
   function deserialize(row) {
@@ -117,6 +130,19 @@ function createGuestPaymentsRouter(db) {
       return res.status(400).json({ error: 'one or more of these orders is already paid' });
     }
 
+    // What's actually left to collect on these orders once voids/comps/
+    // discounts are netted out — computed server-side (not trusted from the
+    // client's `total`) so a manager-authorized adjustment can't be silently
+    // bypassed by charging the guest the pre-adjustment amount.
+    const owedTotal = orders.reduce((sum, o) => sum + computeNetTotals(o).net_total, 0);
+    const alreadyCollectedForOrders = collectedTowardOrders(tableIdentifier, orderIds);
+    const remainingOwed = Math.max(0, owedTotal - alreadyCollectedForOrders);
+    if (total > remainingOwed + 0.02) {
+      return res
+        .status(400)
+        .json({ error: `total exceeds the remaining amount owed on these orders ($${remainingOwed.toFixed(2)})` });
+    }
+
     // The server who gets credit for the tip is whoever served the table,
     // not whoever happens to be running the register — snapshot both a
     // display name (survives a later rename) and a durable user id where
@@ -145,14 +171,11 @@ function createGuestPaymentsRouter(db) {
 
       // "Already collected toward these specific orders" — only payments
       // whose order_ids set intersects this one count, so a reused table
-      // label doesn't inherit a prior visit's payments.
-      const collected = listByTable
-        .all(tableIdentifier)
-        .filter((row) => JSON.parse(row.order_ids).some((id) => orderIds.includes(id)))
-        .reduce((sum, row) => sum + row.total, 0);
-      const owed = orders.reduce((sum, o) => sum + o.total, 0);
-
-      const settled = collected >= owed - 0.01;
+      // label doesn't inherit a prior visit's payments. Compared against the
+      // net (post-adjustment) total, not the gross one, so a table with a
+      // comped item settles once the reduced amount is actually collected.
+      const collected = collectedTowardOrders(tableIdentifier, orderIds);
+      const settled = collected >= owedTotal - 0.01;
       if (settled) {
         for (const id of orderIds) markPaid.run(id);
       }

@@ -9,6 +9,7 @@
     unit_price: number;
     quantity: number;
     note?: string;
+    adjustment_total: number;
   }
   interface Guest {
     id: number;
@@ -83,7 +84,11 @@
       .filter((line) => (assignments[line.id] ?? []).includes(guest.id))
       .map((line) => {
         const shareCount = assignments[line.id].length;
-        return { line, share: 1 / shareCount, lineTotal: (line.unit_price * line.quantity) / shareCount };
+        // Net of any void/comp/discount recorded against this specific
+        // line — a comped item assigned to a guest shouldn't still bill
+        // them for it, and a fully voided line nets to $0.
+        const netLine = Math.max(0, line.unit_price * line.quantity - (line.adjustment_total ?? 0));
+        return { line, share: 1 / shareCount, lineTotal: netLine / shareCount };
       });
     const subtotal = lines.reduce((sum, l) => sum + l.lineTotal, 0);
     const tax = subtotal * taxRate;
@@ -202,7 +207,14 @@
           draggable="true"
           on:dragstart={() => (draggingLineId = line.id)}
         >
-          <div class="font-semibold text-counter-ink">{line.quantity}× {line.name}</div>
+          <div class="font-semibold text-counter-ink">
+            {line.quantity}× {line.name}
+            {#if line.adjustment_total > 0}
+              <span class="text-counter-orange-dark">
+                {line.adjustment_total >= line.unit_price * line.quantity ? '(voided)' : '(adjusted)'}
+              </span>
+            {/if}
+          </div>
           <div class="text-xs text-counter-muted-2">
             {#if assignedGuests.length === 0}
               Unassigned

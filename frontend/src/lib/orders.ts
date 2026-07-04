@@ -16,6 +16,9 @@ export interface OrderItemRow {
   unit_price: number;
   station: Station;
   status: ItemStatus;
+  // Sum of void/comp/discount adjustments recorded against this line
+  // (pre-tax dollars) — 0 for an unadjusted item.
+  adjustment_total: number;
 }
 
 // Table layout row shape returned by GET /api/tables, shared by the floor
@@ -72,6 +75,15 @@ export interface OrderRow {
   subtotal: number;
   tax: number;
   total: number;
+  // Gross subtotal/tax/total above are the immutable invoice amounts fixed
+  // at order creation — never reduced by a later void/comp/discount, since
+  // reports' "gross sales" figures are built on them staying that way.
+  // These net_* fields are what the guest actually owes right now, and are
+  // what checkout/split-bill/floor-plan totals should charge and display.
+  net_subtotal: number;
+  net_tax: number;
+  net_total: number;
+  adjustment_total: number;
   calculated_food_cost: number;
   timestamp: string;
   bill_printed_at: string | null;
@@ -110,7 +122,9 @@ export interface TableSummary {
 export function summarizeTable(ordersForTable: OrderRow[] | undefined): TableSummary {
   if (!ordersForTable || ordersForTable.length === 0) return { status: 'open' };
 
-  const total = ordersForTable.reduce((sum, o) => sum + o.total, 0);
+  // net_total (not the gross total) so a table with a comped/voided item
+  // shows what's actually still owed, not the pre-adjustment invoice amount.
+  const total = ordersForTable.reduce((sum, o) => sum + o.net_total, 0);
   const oldestMs = Math.min(...ordersForTable.map((o) => new Date(o.timestamp).getTime()));
   const minutesOpen = Math.max(0, Math.round((Date.now() - oldestMs) / 60000));
 
@@ -123,6 +137,9 @@ export interface CombinedLine {
   name: string;
   unit_price: number;
   note?: string;
+  // Void/comp/discount amount recorded against this line (pre-tax dollars),
+  // 0 if unadjusted — full unit_price*quantity for a fully voided line.
+  adjustment_total: number;
 }
 
 // Flattens every round sent for a table into one line list for display —
@@ -138,6 +155,7 @@ export function combineOrderLines(ordersForTable: OrderRow[]): CombinedLine[] {
       name: i.name,
       unit_price: i.unit_price,
       note: i.note ?? undefined,
+      adjustment_total: i.adjustment_total,
     }))
   );
 }

@@ -8,8 +8,23 @@
   type TableRow = TableLayoutRow;
 
   const GRID_SIZE = 48;
+  // Seats are small (56px) and meant to sit shoulder-to-shoulder around a
+  // bar — the coarse table grid leaves gaps or forces overlap, so seats snap
+  // to a much finer grid instead.
+  const SEAT_GRID_SIZE = 8;
   const MIN_SIZE = 64;
   const MAX_SIZE = 320;
+  // A bar is just a regular (non-seat) table, but often a long rectangle —
+  // give it much more room than the 320px cap seats and normal tables use.
+  const MAX_BAR_SIZE = 1200;
+
+  function gridSizeFor(table: TableRow) {
+    return table.parent_table_id ? SEAT_GRID_SIZE : GRID_SIZE;
+  }
+
+  function maxSizeFor(table: TableRow) {
+    return table.parent_table_id ? MAX_SIZE : MAX_BAR_SIZE;
+  }
 
   let tables: TableRow[] = [];
   let loading = true;
@@ -83,8 +98,9 @@
 
     function onUp() {
       if (moved) {
-        table.pos_x = Math.round(table.pos_x / GRID_SIZE) * GRID_SIZE;
-        table.pos_y = Math.round(table.pos_y / GRID_SIZE) * GRID_SIZE;
+        const grid = gridSizeFor(table);
+        table.pos_x = Math.round(table.pos_x / grid) * grid;
+        table.pos_y = Math.round(table.pos_y / grid) * grid;
         tables = tables;
         dirty = true;
       } else {
@@ -110,8 +126,9 @@
     function onMove(ev: PointerEvent) {
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
-      table.width = Math.min(MAX_SIZE, Math.max(MIN_SIZE, origW + dx));
-      table.height = Math.min(MAX_SIZE, Math.max(MIN_SIZE, origH + dy));
+      const maxSize = maxSizeFor(table);
+      table.width = Math.min(maxSize, Math.max(MIN_SIZE, origW + dx));
+      table.height = Math.min(maxSize, Math.max(MIN_SIZE, origH + dy));
       tables = tables;
     }
 
@@ -241,7 +258,7 @@
   {#if selected}
     <div class="flex w-[320px] flex-none flex-col border-l border-counter-line bg-white p-5">
       <div class="mb-4 flex items-center justify-between">
-        <div class="text-lg font-extrabold text-counter-ink">Table {selected.label}</div>
+        <div class="text-lg font-extrabold text-counter-ink">{selected.parent_table_id ? 'Seat' : 'Table'} {selected.label}</div>
         <button class="text-sm font-bold text-counter-muted-2" on:click={() => (selectedId = null)}>Close</button>
       </div>
 
@@ -348,34 +365,44 @@
             id="table-width"
             type="number"
             min={MIN_SIZE}
-            max={MAX_SIZE}
+            max={maxSizeFor(selected)}
             class="h-11 w-full rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-[15px] text-counter-ink"
             value={selected.width}
             on:input={(e) =>
-              updateSelected({ width: Math.min(MAX_SIZE, Math.max(MIN_SIZE, Number(e.currentTarget.value) || MIN_SIZE)) })}
+              updateSelected({
+                width: Math.min(maxSizeFor(selected), Math.max(MIN_SIZE, Number(e.currentTarget.value) || MIN_SIZE)),
+              })}
           />
         </div>
         <div class="flex-1">
-          <label for="table-height" class="mb-1 block text-[11px] text-counter-muted">Height</label>
+          <label for="table-height" class="mb-1 block text-[11px] text-counter-muted">Length</label>
           <input
             id="table-height"
             type="number"
             min={MIN_SIZE}
-            max={MAX_SIZE}
+            max={maxSizeFor(selected)}
             class="h-11 w-full rounded-lg border border-counter-line bg-counter-paper px-3 font-mono text-[15px] text-counter-ink"
             value={selected.height}
             on:input={(e) =>
-              updateSelected({ height: Math.min(MAX_SIZE, Math.max(MIN_SIZE, Number(e.currentTarget.value) || MIN_SIZE)) })}
+              updateSelected({
+                height: Math.min(maxSizeFor(selected), Math.max(MIN_SIZE, Number(e.currentTarget.value) || MIN_SIZE)),
+              })}
           />
         </div>
       </div>
 
-      <button
-        class="h-11 rounded-lg text-sm font-bold text-counter-orange-dark hover:bg-[#FEF0E9]"
-        on:click={deleteSelected}
-      >
-        Delete table
-      </button>
+      {#if selected.parent_table_id}
+        <div class="rounded-lg bg-counter-paper px-3 py-2.5 font-mono text-[11px] text-counter-faint">
+          Seats can't be deleted individually — select the bar table and lower its seat count instead.
+        </div>
+      {:else}
+        <button
+          class="h-11 rounded-lg text-sm font-bold text-counter-orange-dark hover:bg-[#FEF0E9]"
+          on:click={deleteSelected}
+        >
+          Delete table
+        </button>
+      {/if}
     </div>
   {/if}
 </div>

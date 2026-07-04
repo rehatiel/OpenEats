@@ -1,17 +1,22 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
+const { findUserByPin } = require('../lib/pin');
+const { createOrderTotalsHelper } = require('../lib/orderTotals');
 
 const VALID_TYPES = ['dine_in', 'to_go', 'delivery'];
 const VALID_KITCHEN_STATUSES = ['new', 'cooking', 'ready', 'completed'];
 const VALID_PAYMENT_STATUSES = ['unpaid', 'paid'];
 const VALID_STATIONS = ['kitchen', 'bar', 'none'];
 const ROLLUP_STATIONS = ['kitchen', 'bar'];
+const VALID_ADJUSTMENT_TYPES = ['void', 'comp', 'discount'];
+const MANAGER_ROLES = ['admin', 'manager'];
 // Priority order for rolling per-item statuses up to a single order-level
 // kitchen_status — an order is only as "done" as its least-done item.
 const ROLLUP_PRIORITY = ['new', 'cooking', 'ready', 'completed'];
 
 function createOrdersRouter(db) {
   const router = express.Router();
+  const { computeNetTotals } = createOrderTotalsHelper(db);
 
   const getMenuItem = db.prepare('SELECT id, name, retail_price, station FROM menu_items WHERE id = ? AND active = 1');
   const getRecipeCost = db.prepare(`
@@ -33,7 +38,8 @@ function createOrdersRouter(db) {
   `);
   const getOrder = db.prepare('SELECT * FROM orders WHERE id = ?');
   const listOrderItems = db.prepare(`
-    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, oi.station, oi.status, mi.name, mi.retail_price AS unit_price
+    SELECT oi.id, oi.menu_item_id, oi.quantity, oi.note, oi.station, oi.status, mi.name, mi.retail_price AS unit_price,
+           COALESCE((SELECT SUM(oia.amount) FROM order_item_adjustments oia WHERE oia.order_item_id = oi.id), 0) AS adjustment_total
     FROM order_items oi
     JOIN menu_items mi ON mi.id = oi.menu_item_id
     WHERE oi.order_id = ?
@@ -48,8 +54,53 @@ function createOrdersRouter(db) {
   );
   const setStationItemStatus = db.prepare('UPDATE order_items SET status = ? WHERE order_id = ? AND station = ?');
 
+  const getOrderItemForOrder = db.prepare(`
+    SELECT oi.id, oi.order_id, oi.menu_item_id, oi.quantity, oi.status, mi.retail_price AS unit_price
+    FROM order_items oi
+    JOIN menu_items mi ON mi.id = oi.menu_item_id
+    WHERE oi.id = ? AND oi.order_id = ?
+  `);
+  const sumItemAdjustments = db.prepare(
+    'SELECT COALESCE(SUM(amount), 0) AS total FROM order_item_adjustments WHERE order_item_id = ?'
+  );
+  const sumOrderAdjustments = db.prepare(
+    'SELECT COALESCE(SUM(amount), 0) AS total FROM order_adjustments WHERE order_id = ?'
+  );
+  const insertItemAdjustment = db.prepare(`
+    INSERT INTO order_item_adjustments (order_item_id, type, amount, reason, authorized_by_user_id, created_by_user_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertOrderAdjustment = db.prepare(`
+    INSERT INTO order_adjustments (order_id, type, amount, reason, authorized_by_user_id, created_by_user_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const incrementStock = db.prepare('UPDATE ingredients SET current_stock = current_stock + ? WHERE id = ?');
+  const setItemStatusById = db.prepare('UPDATE order_items SET status = ? WHERE id = ?');
+  const listItemAdjustments = db.prepare(
+    'SELECT * FROM order_item_adjustments WHERE order_item_id = ? ORDER BY created_at'
+  );
+  const listOrderAdjustmentsFor = db.prepare('SELECT * FROM order_adjustments WHERE order_id = ? ORDER BY created_at');
+
   function serialize(order) {
-    return { ...order, items: listOrderItems.all(order.id) };
+    return { ...order, ...computeNetTotals(order), items: listOrderItems.all(order.id) };
+  }
+
+  // Voids/comps/discounts require a manager (or admin) to authorize —
+  // verified by PIN independent of who's currently logged in (a staff
+  // member can initiate one that a manager walks over and approves without
+  // a separate login), reusing the same linear PIN scan login already uses.
+  function resolveManagerApproval(req, res) {
+    const { manager_pin: managerPin } = req.body ?? {};
+    if (typeof managerPin !== 'string' || managerPin.trim() === '') {
+      res.status(400).json({ error: 'manager_pin is required' });
+      return null;
+    }
+    const manager = findUserByPin(db, managerPin);
+    if (!manager || !MANAGER_ROLES.includes(manager.role)) {
+      res.status(403).json({ error: 'manager_pin did not match an active manager or admin' });
+      return null;
+    }
+    return manager;
   }
 
   // orders.kitchen_status is a rollup over its non-'none'-station items —
@@ -302,6 +353,112 @@ function createOrdersRouter(db) {
     })();
 
     res.json(serialize(getOrder.get(id)));
+  });
+
+  // Per-line void/comp/discount, manager-PIN-authorized. A void additionally
+  // reverses that item's recipe-driven stock deduction and marks it
+  // 'completed' so it drops off any active kitchen/bar display — the item
+  // isn't deleted (it stays on the historical ticket/receipt), just no
+  // longer something staff need to act on.
+  router.post('/:id/items/:itemId/adjustments', requireAuth, (req, res) => {
+    const orderId = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    const item = getOrderItemForOrder.get(itemId, orderId);
+    if (!item) {
+      return res.status(404).json({ error: 'order item not found on this order' });
+    }
+
+    const { type, amount: amountRaw, reason } = req.body ?? {};
+    if (!VALID_ADJUSTMENT_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type must be one of: ${VALID_ADJUSTMENT_TYPES.join(', ')}` });
+    }
+    const lineTotal = item.unit_price * item.quantity;
+    const amount = amountRaw === undefined ? lineTotal : Number(amountRaw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+    const alreadyAdjusted = sumItemAdjustments.get(itemId).total;
+    if (alreadyAdjusted + amount > lineTotal + 0.01) {
+      return res
+        .status(400)
+        .json({ error: `amount exceeds this line's remaining adjustable total ($${(lineTotal - alreadyAdjusted).toFixed(2)})` });
+    }
+
+    const manager = resolveManagerApproval(req, res);
+    if (!manager) return;
+
+    db.transaction(() => {
+      insertItemAdjustment.run(
+        itemId,
+        type,
+        amount,
+        typeof reason === 'string' && reason.trim() !== '' ? reason.trim() : null,
+        manager.id,
+        req.user.id
+      );
+      if (type === 'void') {
+        for (const line of getRecipeLines.all(item.menu_item_id)) {
+          incrementStock.run(line.quantity_required * item.quantity, line.ingredient_id);
+        }
+        setItemStatusById.run('completed', itemId);
+        recomputeOrderKitchenStatus(orderId);
+      }
+    })();
+
+    res.status(201).json({ order: serialize(getOrder.get(orderId)), adjustments: listItemAdjustments.all(itemId) });
+  });
+
+  // Whole-check void/comp/discount (e.g. "10% off the table"), same
+  // manager-PIN authorization as the per-item endpoint above.
+  router.post('/:id/adjustments', requireAuth, (req, res) => {
+    const orderId = Number(req.params.id);
+    const order = getOrder.get(orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'order not found' });
+    }
+
+    const { type, amount: amountRaw, reason } = req.body ?? {};
+    if (!VALID_ADJUSTMENT_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type must be one of: ${VALID_ADJUSTMENT_TYPES.join(', ')}` });
+    }
+    const amount = amountRaw === undefined ? order.total : Number(amountRaw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+    const alreadyAdjusted = sumOrderAdjustments.get(orderId).total;
+    if (alreadyAdjusted + amount > order.total + 0.01) {
+      return res
+        .status(400)
+        .json({ error: `amount exceeds this order's remaining adjustable total ($${(order.total - alreadyAdjusted).toFixed(2)})` });
+    }
+
+    const manager = resolveManagerApproval(req, res);
+    if (!manager) return;
+
+    db.transaction(() => {
+      insertOrderAdjustment.run(
+        orderId,
+        type,
+        amount,
+        typeof reason === 'string' && reason.trim() !== '' ? reason.trim() : null,
+        manager.id,
+        req.user.id
+      );
+      if (type === 'void') {
+        // Mirrors the per-item void's stock reversal, applied to every item
+        // on the order, and rolls every item's status to 'completed' so
+        // nothing lingers on an active kitchen/bar display.
+        for (const orderItem of listOrderItems.all(orderId)) {
+          for (const line of getRecipeLines.all(orderItem.menu_item_id)) {
+            incrementStock.run(line.quantity_required * orderItem.quantity, line.ingredient_id);
+          }
+          setItemStatusById.run('completed', orderItem.id);
+        }
+        recomputeOrderKitchenStatus(orderId);
+      }
+    })();
+
+    res.status(201).json({ order: serialize(getOrder.get(orderId)), adjustments: listOrderAdjustmentsFor.all(orderId) });
   });
 
   return router;

@@ -109,11 +109,14 @@
       : 'Checkout';
   $: orderIdLabel = orders.length ? orders.map((o) => `#${o.id}`).join(', ') : '';
 
+  // net_* (not gross subtotal/tax/total) so a voided/comped/discounted item
+  // actually reduces what's charged at checkout, not just what's reported.
   $: totals = {
-    subtotal: orders.reduce((sum, o) => sum + o.subtotal, 0),
-    tax: orders.reduce((sum, o) => sum + o.tax, 0),
-    total: orders.reduce((sum, o) => sum + o.total, 0),
+    subtotal: orders.reduce((sum, o) => sum + o.net_subtotal, 0),
+    tax: orders.reduce((sum, o) => sum + o.net_tax, 0),
+    total: orders.reduce((sum, o) => sum + o.net_total, 0),
   };
+  $: adjustmentTotal = orders.reduce((sum, o) => sum + o.adjustment_total, 0);
 
   // What the plain Tender button actually needs to collect — the full total
   // minus anything a split-bill session has already charged toward this
@@ -329,6 +332,11 @@
     </div>
 
     <div class="flex-none border-t border-counter-line bg-counter-cream px-4 py-5 sm:px-5">
+      {#if adjustmentTotal > 0}
+        <div class="mb-1.5 flex justify-between text-[15px] text-counter-orange-dark">
+          <span>Voids/comps/discounts</span><span class="font-mono">-${adjustmentTotal.toFixed(2)}</span>
+        </div>
+      {/if}
       <div class="mb-1.5 flex justify-between text-[15px] text-counter-muted-2">
         <span>Subtotal</span><span class="font-mono">${totals.subtotal.toFixed(2)}</span>
       </div>
@@ -492,6 +500,7 @@
     orderIds={orderIdLabel}
     lines={cartLines}
     totals={completed ? totals : { subtotal: totals.subtotal, tax: totals.tax, total: owed }}
+    adjustments={adjustmentTotal}
     taxRate={$settings.tax_rate}
     timestamp={completedAt || new Date().toISOString()}
     settled={completed}

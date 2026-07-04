@@ -6,6 +6,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const ALLOWED_IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
 const VALID_STATIONS = ['kitchen', 'bar', 'none'];
+const VALID_TAX_CATEGORIES = ['food', 'liquor', 'wine', 'beer', 'uncategorized'];
 
 // uploadsDir is passed in from index.js, which already knows DB_PATH — images
 // live on the same volume as the SQLite file so they survive restarts with
@@ -31,14 +32,32 @@ function createMenuRouter(db, uploadsDir) {
   });
 
   const listMenuItems = db.prepare(
-    'SELECT id, name, category, retail_price, active, image_url, station FROM menu_items WHERE active = 1 ORDER BY category, name'
+    'SELECT id, name, category, category_id, retail_price, active, image_url, station FROM menu_items WHERE active = 1 ORDER BY category, name'
   );
   const getMenuItem = db.prepare(
-    'SELECT id, name, category, retail_price, active, image_url, station FROM menu_items WHERE id = ?'
+    'SELECT id, name, category, category_id, retail_price, active, image_url, station FROM menu_items WHERE id = ?'
   );
   const insertMenuItem = db.prepare(
-    'INSERT INTO menu_items (name, category, retail_price, active, station) VALUES (?, ?, ?, 1, ?)'
+    'INSERT INTO menu_items (name, category, category_id, retail_price, active, station) VALUES (?, ?, ?, ?, 1, ?)'
   );
+  const insertCategoryIfMissing = db.prepare(
+    'INSERT INTO menu_categories (name, tax_category) VALUES (?, ?) ON CONFLICT(name) DO NOTHING'
+  );
+  const getCategoryByName = db.prepare('SELECT id FROM menu_categories WHERE name = ?');
+  const listCategories = db.prepare('SELECT * FROM menu_categories WHERE active = 1 ORDER BY name');
+  const getCategory = db.prepare('SELECT * FROM menu_categories WHERE id = ?');
+
+  // The free-text `category` (display grouping, e.g. "Tacos") is the source
+  // of truth; category_id is a derived lookup into menu_categories (the
+  // tax-relevant grouping), auto-created the first time a name is seen —
+  // same pattern as init.js's boot-time backfill. Renaming a category's
+  // display text here effectively creates a new tax_category mapping
+  // (defaulting to 'uncategorized') the first time; an admin reclassifies
+  // it via PATCH /api/menu/categories/:id afterward.
+  function resolveCategoryId(name) {
+    insertCategoryIfMissing.run(name, 'uncategorized');
+    return getCategoryByName.get(name).id;
+  }
   const listOptionsFor = db.prepare('SELECT id, label FROM menu_item_options WHERE menu_item_id = ? ORDER BY sort_order');
   const listAllOptions = db.prepare('SELECT id, menu_item_id, label FROM menu_item_options ORDER BY menu_item_id, sort_order');
   const countOptionsFor = db.prepare('SELECT COUNT(*) AS n FROM menu_item_options WHERE menu_item_id = ?');
@@ -119,7 +138,14 @@ function createMenuRouter(db, uploadsDir) {
       return res.status(400).json({ error: `station must be one of: ${VALID_STATIONS.join(', ')}` });
     }
 
-    const { lastInsertRowid } = insertMenuItem.run(name.trim(), category.trim(), retailPrice, station ?? 'kitchen');
+    const trimmedCategory = category.trim();
+    const { lastInsertRowid } = insertMenuItem.run(
+      name.trim(),
+      trimmedCategory,
+      resolveCategoryId(trimmedCategory),
+      retailPrice,
+      station ?? 'kitchen'
+    );
     res.status(201).json(withOptions(getMenuItem.get(lastInsertRowid)));
   });
 
@@ -145,15 +171,31 @@ function createMenuRouter(db, uploadsDir) {
       station: station ?? existing.station,
     };
 
-    db.prepare('UPDATE menu_items SET name = ?, category = ?, retail_price = ?, active = ?, station = ? WHERE id = ?').run(
-      next.name,
-      next.category,
-      next.retail_price,
-      next.active,
-      next.station,
-      id
-    );
+    db.prepare(
+      'UPDATE menu_items SET name = ?, category = ?, category_id = ?, retail_price = ?, active = ?, station = ? WHERE id = ?'
+    ).run(next.name, next.category, resolveCategoryId(next.category), next.retail_price, next.active, next.station, id);
     res.json(withOptions(getMenuItem.get(id)));
+  });
+
+  // Tax-relevant category management, separate from the free-text
+  // `category` field on menu items themselves — this is what the Daily
+  // Sales Summary's Food/Liquor/Wine/Beer split reads.
+  router.get('/categories', requireAuth, (_req, res) => {
+    res.json(listCategories.all());
+  });
+
+  router.patch('/categories/:id', requireAuth, requireRole('admin'), (req, res) => {
+    const id = Number(req.params.id);
+    const existing = getCategory.get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'menu category not found' });
+    }
+    const { tax_category: taxCategory } = req.body ?? {};
+    if (!VALID_TAX_CATEGORIES.includes(taxCategory)) {
+      return res.status(400).json({ error: `tax_category must be one of: ${VALID_TAX_CATEGORIES.join(', ')}` });
+    }
+    db.prepare('UPDATE menu_categories SET tax_category = ? WHERE id = ?').run(taxCategory, id);
+    res.json(getCategory.get(id));
   });
 
   // Soft delete only — an order_items row may still reference this item.

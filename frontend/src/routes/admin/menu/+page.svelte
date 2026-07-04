@@ -66,6 +66,42 @@
   let recipeError = '';
   let savingRecipeLine = false;
 
+  type TaxCategory = 'food' | 'liquor' | 'wine' | 'beer' | 'uncategorized';
+  interface TaxCategoryRow {
+    id: number;
+    name: string;
+    tax_category: TaxCategory;
+  }
+  const taxCategoryOptions: { key: TaxCategory; label: string }[] = [
+    { key: 'food', label: 'Food' },
+    { key: 'liquor', label: 'Liquor' },
+    { key: 'wine', label: 'Wine' },
+    { key: 'beer', label: 'Beer' },
+    { key: 'uncategorized', label: 'Uncategorized' },
+  ];
+  let taxCategories: TaxCategoryRow[] = [];
+  let taxCategoriesOpen = false;
+  let taxCategoryError = '';
+
+  async function loadTaxCategories() {
+    try {
+      taxCategories = await apiJson<TaxCategoryRow[]>('/api/menu/categories');
+    } catch {
+      // The panel just won't have anything to show — reclassification can
+      // wait until the next successful load.
+    }
+  }
+
+  async function setTaxCategory(row: TaxCategoryRow, taxCategory: TaxCategory) {
+    taxCategoryError = '';
+    try {
+      await apiJson(`/api/menu/categories/${row.id}`, { method: 'PATCH', body: JSON.stringify({ tax_category: taxCategory }) });
+      await loadTaxCategories();
+    } catch (e) {
+      taxCategoryError = e instanceof Error ? e.message : 'Failed to update category';
+    }
+  }
+
   $: categories = [...new Set(items.map((i) => i.category))].sort();
   $: grouped = categories.map((cat) => ({ cat, rows: items.filter((i) => i.category === cat) }));
 
@@ -83,6 +119,7 @@
 
   onMount(() => {
     load();
+    loadTaxCategories();
     apiJson<IngredientRow[]>('/api/ingredients')
       .then((rows) => (ingredients = rows))
       .catch(() => {
@@ -274,8 +311,46 @@
   <div class="min-w-0 flex-1 overflow-y-auto p-6">
     <div class="mb-5 flex items-center justify-between">
       <div class="text-xl font-extrabold text-counter-ink">Menu items</div>
-      <Button variant="primary" on:click={openAdd}>+ Add item</Button>
+      <div class="flex gap-2">
+        <button
+          class="h-10 rounded-lg border border-counter-line px-3 text-sm font-bold text-counter-ink"
+          on:click={() => (taxCategoriesOpen = !taxCategoriesOpen)}
+        >
+          Tax categories
+        </button>
+        <Button variant="primary" on:click={openAdd}>+ Add item</Button>
+      </div>
     </div>
+
+    {#if taxCategoriesOpen}
+      <div class="mb-5 rounded-2xl border border-counter-line bg-white p-4">
+        <div class="mb-3 text-sm font-bold text-counter-ink">
+          Tax category — drives the Daily Sales Summary's Food/Liquor/Wine/Beer split. "Uncategorized" items count separately, never folded into Food.
+        </div>
+        {#if taxCategoryError}
+          <div class="mb-3 text-sm font-semibold text-counter-orange-dark">{taxCategoryError}</div>
+        {/if}
+        <div class="space-y-2">
+          {#each taxCategories as cat (cat.id)}
+            <div class="flex items-center justify-between gap-2 rounded-lg bg-counter-paper px-3 py-2">
+              <span class="text-sm font-semibold text-counter-ink">{cat.name}</span>
+              <div class="flex flex-wrap justify-end gap-1.5">
+                {#each taxCategoryOptions as opt (opt.key)}
+                  <button
+                    class="h-8 rounded-md px-2.5 text-xs font-bold {cat.tax_category === opt.key
+                      ? 'bg-counter-ink text-white'
+                      : 'bg-white text-counter-muted-2'}"
+                    on:click={() => setTaxCategory(cat, opt.key)}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     {#if loadError}
       <div class="mb-4 rounded-lg bg-[#FEF0E9] px-4 py-2.5 text-sm font-semibold text-[#C2410C]">{loadError}</div>

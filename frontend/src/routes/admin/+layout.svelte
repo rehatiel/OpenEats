@@ -9,6 +9,10 @@
     { href: '/admin/inventory', label: 'Inventory' },
     { href: '/admin/vendors', label: 'Vendors' },
     { href: '/admin/purchase-orders', label: 'Purchase Orders' },
+    { href: '/admin/vendor-invoices', label: 'Vendor Invoices' },
+    { href: '/admin/inventory-counts', label: 'Inventory Counts' },
+    { href: '/admin/capex', label: 'CapEx Log' },
+    { href: '/admin/reports', label: 'Reports' },
     { href: '/admin/settings', label: 'Settings' },
   ];
 

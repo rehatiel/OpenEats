@@ -178,6 +178,101 @@ function initDb(dbPath) {
       items_summary    TEXT NOT NULL,
       paid_at          TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
+
+    -- Tax-relevant grouping for menu items (Food/Liquor/Wine/Beer), separate
+    -- from the free-text 'category' on menu_items (which is display
+    -- grouping, e.g. "Tacos"/"Burritos"). 'uncategorized' is the deliberate
+    -- default for anything not yet classified — reports must surface it as
+    -- its own bucket, never silently fold it into 'food'.
+    CREATE TABLE IF NOT EXISTS menu_categories (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      name         TEXT NOT NULL UNIQUE,
+      tax_category TEXT NOT NULL DEFAULT 'uncategorized' CHECK (tax_category IN ('food', 'liquor', 'wine', 'beer', 'uncategorized')),
+      active       INTEGER NOT NULL DEFAULT 1
+    );
+
+    -- Per-line-item void/comp/discount, each requiring a manager's PIN to
+    -- authorize (verified server-side against users.pin_hash independent of
+    -- who's currently logged in — see POST /api/orders/:id/items/:itemId/adjustments).
+    -- created_by is whoever initiated it (may be staff); authorized_by is
+    -- always a manager/admin. A void additionally reverses that item's
+    -- recipe-driven stock deduction.
+    CREATE TABLE IF NOT EXISTS order_item_adjustments (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_item_id         INTEGER NOT NULL REFERENCES order_items(id),
+      type                  TEXT NOT NULL CHECK (type IN ('void', 'comp', 'discount')),
+      amount                REAL NOT NULL,
+      reason                TEXT,
+      authorized_by_user_id INTEGER NOT NULL REFERENCES users(id),
+      created_by_user_id    INTEGER REFERENCES users(id),
+      created_at            TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Whole-check comps/discounts/voids (e.g. "10% off the table"), same
+    -- manager-authorization requirement as the per-item table above.
+    CREATE TABLE IF NOT EXISTS order_adjustments (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id              INTEGER NOT NULL REFERENCES orders(id),
+      type                  TEXT NOT NULL CHECK (type IN ('void', 'comp', 'discount')),
+      amount                REAL NOT NULL,
+      reason                TEXT,
+      authorized_by_user_id INTEGER NOT NULL REFERENCES users(id),
+      created_by_user_id    INTEGER REFERENCES users(id),
+      created_at            TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- due_date drives AP Aging. status is only ever 'open' or 'paid' —
+    -- "overdue" is deliberately NOT a stored status (it would drift from
+    -- reality without a cron job); it's computed at query time from
+    -- due_date instead.
+    CREATE TABLE IF NOT EXISTS vendor_invoices (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      vendor_id         INTEGER NOT NULL REFERENCES vendors(id),
+      purchase_order_id INTEGER REFERENCES purchase_orders(id),
+      invoice_number    TEXT,
+      invoice_date      TEXT NOT NULL,
+      due_date          TEXT NOT NULL,
+      amount            REAL NOT NULL,
+      paid_date         TEXT,
+      status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid')),
+      notes             TEXT,
+      created_at        TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Long-lived asset purchases (kitchen equipment, renovations, software
+    -- platforms) — feeds the CapEx log report and, later, depreciation in
+    -- the P&L/Balance Sheet.
+    CREATE TABLE IF NOT EXISTS capex_items (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      description        TEXT NOT NULL,
+      category           TEXT,
+      purchase_date      TEXT NOT NULL,
+      amount             REAL NOT NULL,
+      vendor_id          INTEGER REFERENCES vendors(id),
+      useful_life_months INTEGER,
+      notes              TEXT,
+      created_at         TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- A physical count session; lines snapshot both what was counted and
+    -- what the system expected at that moment (ingredients.current_stock
+    -- before this count's corrections are applied), so the variance is
+    -- reproducible later even after current_stock has moved on.
+    CREATE TABLE IF NOT EXISTS physical_inventory_counts (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      counted_at         TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      counted_by_user_id INTEGER REFERENCES users(id),
+      notes              TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS physical_inventory_count_lines (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      count_id          INTEGER NOT NULL REFERENCES physical_inventory_counts(id),
+      ingredient_id     INTEGER NOT NULL REFERENCES ingredients(id),
+      counted_quantity  REAL NOT NULL,
+      expected_quantity REAL NOT NULL,
+      variance          REAL NOT NULL
+    );
   `);
 
   // CREATE TABLE IF NOT EXISTS above only applies schema to a brand-new
@@ -221,6 +316,31 @@ function initDb(dbPath) {
   ensureColumn(db, 'guest_payments', 'cc_fee_amount', 'REAL NOT NULL DEFAULT 0');
   ensureColumn(db, 'guest_payments', 'server_user_id', 'INTEGER REFERENCES users(id)');
   ensureColumn(db, 'guest_payments', 'server_name', 'TEXT');
+
+  // Additive alongside the existing free-text `category` (display grouping)
+  // — this is the tax-relevant grouping, backfilled below.
+  ensureColumn(db, 'menu_items', 'category_id', 'INTEGER REFERENCES menu_categories(id)');
+
+  // One-time-per-new-category backfill: every distinct free-text `category`
+  // not yet mapped gets an auto-created menu_categories row (tax_category
+  // defaults to 'uncategorized' — never silently assumed 'food'; an admin
+  // must actively reclassify liquor/wine/beer/food). Naturally idempotent —
+  // subsequent boots find no unmapped categories left.
+  {
+    const insertCategoryIfMissing = db.prepare(
+      'INSERT INTO menu_categories (name, tax_category) VALUES (?, ?) ON CONFLICT(name) DO NOTHING'
+    );
+    const getCategoryByName = db.prepare('SELECT id FROM menu_categories WHERE name = ?');
+    const setCategoryId = db.prepare('UPDATE menu_items SET category_id = ? WHERE category = ? AND category_id IS NULL');
+    const unmapped = db
+      .prepare('SELECT DISTINCT category FROM menu_items WHERE category IS NOT NULL AND category_id IS NULL')
+      .all();
+    for (const { category } of unmapped) {
+      insertCategoryIfMissing.run(category, 'uncategorized');
+      const { id } = getCategoryByName.get(category);
+      setCategoryId.run(id, category);
+    }
+  }
 
   // One-time backfill: pre-migration order_items default to status='new'
   // (the column default), which would make every historical completed

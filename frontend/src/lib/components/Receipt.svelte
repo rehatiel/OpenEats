@@ -6,6 +6,11 @@
   export let orderIds: string;
   export let lines: CombinedLine[];
   export let totals: { subtotal: number; tax: number; total: number };
+  // Sum of void/comp/discount amounts already netted out of `totals` above —
+  // shown as its own line so the printed lines (full menu price) reconcile
+  // against the (already-reduced) subtotal, same convention as a real POS
+  // receipt itemizing a discount rather than silently reprising each line.
+  export let adjustments = 0;
   export let taxRate: number;
   export let timestamp: string;
   // false renders a pre-payment bill ("Amount Due") instead of a paid
@@ -41,6 +46,9 @@
 
   <div class="my-2 border-t border-dashed border-black"></div>
 
+  {#if adjustments > 0}
+    <div class="flex justify-between"><span>Voids/comps/discounts</span><span>-${adjustments.toFixed(2)}</span></div>
+  {/if}
   <div class="flex justify-between"><span>Subtotal</span><span>${totals.subtotal.toFixed(2)}</span></div>
   <div class="flex justify-between"><span>Tax ({(taxRate * 100).toFixed(2)}%)</span><span>${totals.tax.toFixed(2)}</span></div>
   {#if cardFee > 0}

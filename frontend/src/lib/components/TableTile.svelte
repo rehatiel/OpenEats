@@ -13,6 +13,12 @@
   $: tileWidth = width ?? (table.shape === 'round' ? 150 : 112);
   $: tileHeight = height ?? (table.shape === 'round' ? 150 : 112);
 
+  // Bar-style seat tables carry their parent's label baked into the id
+  // (e.g. "2 - Seat 1") so orders/lookups still key off it — but the tile
+  // itself should just show the seat number.
+  $: seatMatch = table.id.match(/- Seat (\d+)$/);
+  $: displayId = seatMatch ? seatMatch[1] : table.id;
+
   const dispatch = createEventDispatcher<{ select: MockTable }>();
 
   const statusFill: Record<string, string> = {
@@ -63,10 +69,12 @@
     style="width: {tileWidth}px; height: {tileHeight}px;"
     on:click={() => dispatch('select', table)}
   >
-    <div class="text-3xl font-extrabold leading-none {numberColor[table.status]}">{table.id}</div>
+    <div class="text-3xl font-extrabold leading-none {numberColor[table.status]}">{displayId}</div>
 
     {#if table.status === 'open'}
-      <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} seats</div>
+      {#if !seatMatch}
+        <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} seats</div>
+      {/if}
       <div class="mt-0.5 font-mono text-[10px] font-bold {captionColor[table.status]}">OPEN</div>
     {:else if table.status === 'ready'}
       <div class="mt-1 font-mono text-[11px] {captionColor[table.status]}">{table.seats} · {table.minutesOpen} min</div>
