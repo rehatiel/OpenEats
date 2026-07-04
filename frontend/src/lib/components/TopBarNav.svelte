@@ -27,12 +27,14 @@
   <button class={linkClass} on:click={() => goto(link.href)}>{link.label}</button>
 {/each}
 
-{#if theme === 'kds'}
-  <div class="hidden font-mono text-sm text-kds-muted lg:block">{$auth.user?.name} · {$auth.user?.role}</div>
-  <button class="text-sm font-bold text-kds-muted hover:text-kds-text" on:click={signOut}>Sign out</button>
-{:else}
-  <div class="hidden items-center gap-2 lg:flex">
-    <div class="font-mono text-[13px] text-counter-muted">{$auth.user?.name} · {$auth.user?.role}</div>
-    <button class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink" on:click={signOut}>Sign out</button>
-  </div>
+{#if $auth.user}
+  {#if theme === 'kds'}
+    <div class="hidden font-mono text-sm text-kds-muted lg:block">{$auth.user.name} · {$auth.user.role}</div>
+    <button class="text-sm font-bold text-kds-muted hover:text-kds-text" on:click={signOut}>Sign out</button>
+  {:else}
+    <div class="hidden items-center gap-2 lg:flex">
+      <div class="font-mono text-[13px] text-counter-muted">{$auth.user.name} · {$auth.user.role}</div>
+      <button class="text-sm font-bold text-counter-muted-2 hover:text-counter-ink" on:click={signOut}>Sign out</button>
+    </div>
+  {/if}
 {/if}

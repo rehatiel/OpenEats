@@ -93,6 +93,7 @@
   $: navLinks = [
     { href: '/', label: 'Order' },
     { href: '/pickup', label: 'Pickup' },
+    { href: '/punch', label: 'Time Clock' },
     { href: '/dashboard', label: 'Dashboard' },
     ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),
     ...($auth.user?.role === 'admin' ? [{ href: '/admin/users', label: 'Admin' }] : []),

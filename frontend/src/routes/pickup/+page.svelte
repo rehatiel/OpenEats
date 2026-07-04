@@ -10,6 +10,7 @@
   const navLinks = [
     { href: '/', label: 'Order' },
     { href: '/tables', label: 'Tables' },
+    { href: '/punch', label: 'Time Clock' },
   ];
 
   // To-go/delivery orders have no table, so once the kitchen clears them off

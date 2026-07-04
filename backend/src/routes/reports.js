@@ -271,6 +271,40 @@ function createReportsRouter(db) {
     ORDER BY varianceValue ASC
   `);
 
+  const closedPunchesForPeriod = db.prepare(`
+    SELECT tp.id, tp.user_id, u.name, tp.clock_in, tp.clock_out
+    FROM time_punches tp
+    JOIN users u ON u.id = tp.user_id
+    WHERE tp.clock_out IS NOT NULL AND tp.clock_in >= ? AND tp.clock_in < ?
+  `);
+  const wageRatesForUser = db.prepare(
+    'SELECT hourly_rate, effective_date FROM staff_wage_rates WHERE user_id = ? ORDER BY effective_date DESC, id DESC'
+  );
+  const onShiftNowQuery = db.prepare(`
+    SELECT tp.id, tp.user_id, u.name, tp.clock_in
+    FROM time_punches tp
+    JOIN users u ON u.id = tp.user_id
+    WHERE tp.clock_out IS NULL
+    ORDER BY tp.clock_in
+  `);
+  // The rate in effect AS OF the punch's (local business-day) date — never
+  // "today's" rate, so a later raise doesn't retroactively reprice hours
+  // already worked and already reported on.
+  function rateForPunch(userId, localDateIso) {
+    const match = wageRatesForUser.all(userId).find((r) => r.effective_date <= localDateIso);
+    return match ? match.hourly_rate : null;
+  }
+
+  // A shift is attributed to whichever period its starts_at falls into —
+  // same "don't split at the boundary" simplification as punches, rather
+  // than clipping an overnight shift across two periods.
+  const schedulesStartingInPeriod = db.prepare(`
+    SELECT ss.user_id, u.name, ss.starts_at, ss.ends_at
+    FROM shift_schedules ss
+    JOIN users u ON u.id = ss.user_id
+    WHERE ss.starts_at >= ? AND ss.starts_at < ?
+  `);
+
   const openInvoicesQuery = db.prepare(`
     SELECT vi.*, v.name AS vendor_name
     FROM vendor_invoices vi
@@ -507,6 +541,123 @@ function createReportsRouter(db) {
       current: { grossSales: current.grossSales, orders: current.orders, avgTicket: current.orders > 0 ? current.grossSales / current.orders : 0 },
       prior: { grossSales: prior.grossSales, orders: prior.orders, avgTicket: prior.orders > 0 ? prior.grossSales / prior.orders : 0 },
       grossSalesDeltaPct: pctDelta(current.grossSales, prior.grossSales),
+    });
+  });
+
+  // Labor Cost & Punch Report — hours and cost per employee for the period,
+  // priced at the wage rate in effect on each punch's date (not today's
+  // rate). A punch is attributed to its clock_in business day even if the
+  // shift runs past local midnight — splitting an overnight shift across
+  // two days is a refinement this report doesn't need. Only closed punches
+  // count toward cost; anyone still clocked in is surfaced separately under
+  // onShiftNow, priced at $0 since their hours aren't final yet.
+  router.get('/labor-cost', requireAuth, (req, res) => {
+    const rangeKey = VALID_RANGES.includes(req.query.range) ? req.query.range : 'week';
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const { start, end } = resolveRange(rangeKey, tz);
+    const startSql = toSqlTimestamp(start);
+    const endSql = toSqlTimestamp(end);
+
+    const byUser = new Map();
+    let missingRateHours = 0;
+    for (const p of closedPunchesForPeriod.all(startSql, endSql)) {
+      const hours = (new Date(p.clock_out).getTime() - new Date(p.clock_in).getTime()) / 3600000;
+      const localDate = DateTime.fromISO(p.clock_in, { zone: 'utc' }).setZone(tz).toISODate();
+      const rate = rateForPunch(p.user_id, localDate);
+
+      const entry = byUser.get(p.user_id) ?? { userId: p.user_id, name: p.name, hours: 0, cost: 0, missingRateHours: 0 };
+      entry.hours += hours;
+      if (rate != null) {
+        entry.cost += hours * rate;
+      } else {
+        entry.missingRateHours += hours;
+        missingRateHours += hours;
+      }
+      byUser.set(p.user_id, entry);
+    }
+
+    const byEmployee = Array.from(byUser.values()).sort((a, b) => b.cost - a.cost);
+    const totalHours = byEmployee.reduce((sum, e) => sum + e.hours, 0);
+    const totalCost = byEmployee.reduce((sum, e) => sum + e.cost, 0);
+
+    const agg = aggregateOrders.get(startSql, endSql);
+    const netSales = agg.grossSales - totalAdjustments(startSql, endSql);
+
+    res.json({
+      range: { key: rangeKey, start: start.toUTC().toISO(), end: end.toUTC().toISO() },
+      byEmployee,
+      totalHours,
+      totalCost,
+      netSales,
+      laborCostPct: netSales > 0 ? (totalCost / netSales) * 100 : 0,
+      onShiftNow: onShiftNowQuery.all(),
+      note:
+        missingRateHours > 0.005
+          ? `${missingRateHours.toFixed(2)} hour(s) have no wage rate on file as of the punch date and are excluded from cost.`
+          : null,
+    });
+  });
+
+  // Labor Variance Report — scheduled vs. actual hours/cost per employee,
+  // depends on shift_schedules existing (Phase 3b). Both sides are priced
+  // at the wage rate in effect on the shift/punch's own date, so a variance
+  // reflects hours worked vs. planned, not a rate change muddying the
+  // comparison.
+  router.get('/labor-variance', requireAuth, (req, res) => {
+    const rangeKey = VALID_RANGES.includes(req.query.range) ? req.query.range : 'week';
+    const tz = getSetting.get('restaurant_timezone')?.value || 'America/Chicago';
+    const { start, end } = resolveRange(rangeKey, tz);
+    const startSql = toSqlTimestamp(start);
+    const endSql = toSqlTimestamp(end);
+
+    const byUser = new Map();
+    function bucket(userId, name) {
+      if (!byUser.has(userId)) {
+        byUser.set(userId, { userId, name, scheduledHours: 0, scheduledCost: 0, actualHours: 0, actualCost: 0 });
+      }
+      return byUser.get(userId);
+    }
+
+    // Same "no wage rate on file" gap labor-cost surfaces — a missing rate
+    // is priced as $0 here too (so the report still renders), but flagged
+    // via `note` rather than silently understating cost/variance.
+    let missingRateHours = 0;
+
+    for (const s of schedulesStartingInPeriod.all(startSql, endSql)) {
+      const hours = (new Date(s.ends_at).getTime() - new Date(s.starts_at).getTime()) / 3600000;
+      const localDate = DateTime.fromISO(s.starts_at, { zone: 'utc' }).setZone(tz).toISODate();
+      const rate = rateForPunch(s.user_id, localDate);
+      const entry = bucket(s.user_id, s.name);
+      entry.scheduledHours += hours;
+      if (rate != null) entry.scheduledCost += hours * rate;
+      else missingRateHours += hours;
+    }
+
+    for (const p of closedPunchesForPeriod.all(startSql, endSql)) {
+      const hours = (new Date(p.clock_out).getTime() - new Date(p.clock_in).getTime()) / 3600000;
+      const localDate = DateTime.fromISO(p.clock_in, { zone: 'utc' }).setZone(tz).toISODate();
+      const rate = rateForPunch(p.user_id, localDate);
+      const entry = bucket(p.user_id, p.name);
+      entry.actualHours += hours;
+      if (rate != null) entry.actualCost += hours * rate;
+      else missingRateHours += hours;
+    }
+
+    const byEmployee = Array.from(byUser.values())
+      .map((e) => ({ ...e, hoursVariance: e.actualHours - e.scheduledHours, costVariance: e.actualCost - e.scheduledCost }))
+      .sort((a, b) => Math.abs(b.costVariance) - Math.abs(a.costVariance));
+
+    res.json({
+      range: { key: rangeKey, start: start.toUTC().toISO(), end: end.toUTC().toISO() },
+      byEmployee,
+      note:
+        missingRateHours > 0.005
+          ? `${missingRateHours.toFixed(2)} hour(s) have no wage rate on file as of their date and are priced at $0.`
+          : null,
+      totalScheduledHours: byEmployee.reduce((sum, e) => sum + e.scheduledHours, 0),
+      totalActualHours: byEmployee.reduce((sum, e) => sum + e.actualHours, 0),
+      totalScheduledCost: byEmployee.reduce((sum, e) => sum + e.scheduledCost, 0),
+      totalActualCost: byEmployee.reduce((sum, e) => sum + e.actualCost, 0),
     });
   });
 

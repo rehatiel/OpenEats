@@ -119,6 +119,7 @@
   $: navLinks = [
     ...($settings.service_dine_in ? [{ href: '/tables', label: 'Tables' }, { href: '/register', label: 'Register' }] : []),
     ...($settings.service_to_go || $settings.service_delivery ? [{ href: '/pickup', label: 'Pickup' }] : []),
+    { href: '/punch', label: 'Time Clock' },
     ...($auth.user?.role !== 'staff' ? [{ href: '/dashboard', label: 'Dashboard' }] : []),
     { href: '/kitchen', label: 'Kitchen ↗' },
     ...($settings.bar_enabled ? [{ href: '/bar', label: 'Bar ↗' }] : []),

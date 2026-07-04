@@ -12,6 +12,8 @@
     { href: '/admin/vendor-invoices', label: 'Vendor Invoices' },
     { href: '/admin/inventory-counts', label: 'Inventory Counts' },
     { href: '/admin/capex', label: 'CapEx Log' },
+    { href: '/admin/wage-rates', label: 'Wage Rates' },
+    { href: '/admin/schedules', label: 'Schedules' },
     { href: '/admin/reports', label: 'Reports' },
     { href: '/admin/settings', label: 'Settings' },
   ];

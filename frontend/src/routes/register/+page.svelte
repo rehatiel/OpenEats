@@ -10,6 +10,7 @@
   const navLinks = [
     { href: '/', label: 'Order' },
     { href: '/tables', label: 'Tables' },
+    { href: '/punch', label: 'Time Clock' },
   ];
 
   interface TableEntry {

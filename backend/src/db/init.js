@@ -315,6 +315,52 @@ function initDb(dbPath) {
       debit      REAL NOT NULL DEFAULT 0,
       credit     REAL NOT NULL DEFAULT 0
     );
+
+    -- Wage rate HISTORY, not a single mutable column on users — a raise
+    -- takes effect from its effective_date forward without rewriting the
+    -- cost of hours already worked at the old rate (see lib/labor.js, which
+    -- looks up "the rate in effect as of this punch," never "today's
+    -- rate"). Deliberately no PII beyond what's needed to price hours — no
+    -- withholding/tax/pay-stub fields; payroll stays out of scope.
+    CREATE TABLE IF NOT EXISTS staff_wage_rates (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id        INTEGER NOT NULL REFERENCES users(id),
+      hourly_rate    REAL NOT NULL,
+      effective_date TEXT NOT NULL,
+      created_at     TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- One row per punch. clock_out NULL means still on shift — only closed
+    -- punches count toward labor cost (see lib/labor.js); an open punch is
+    -- reported separately as "on shift now," never priced. A punch is
+    -- attributed to its clock_in business day for reporting, even if the
+    -- shift runs past local midnight.
+    CREATE TABLE IF NOT EXISTS time_punches (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL REFERENCES users(id),
+      clock_in   TEXT NOT NULL,
+      clock_out  TEXT
+    );
+
+    -- The "budget" a Labor Variance report compares actual punches against.
+    CREATE TABLE IF NOT EXISTS shift_schedules (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL REFERENCES users(id),
+      starts_at  TEXT NOT NULL,
+      ends_at    TEXT NOT NULL,
+      notes      TEXT
+    );
+
+    -- Tracked so a schedule can be built around it; feeds no report.
+    CREATE TABLE IF NOT EXISTS time_off_requests (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id),
+      start_date  TEXT NOT NULL,
+      end_date    TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
+      notes       TEXT,
+      created_at  TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
   `);
 
   // At most one daily-close entry per business day — a partial index (rather
@@ -324,6 +370,14 @@ function initDb(dbPath) {
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_entries_daily_close_date
       ON journal_entries(entry_date) WHERE source = 'daily_close'
+  `);
+
+  // At most one open punch per user — backstops the application-level
+  // "already clocked in" guard the same way the daily-close index above
+  // backstops that job, against a double clock-in race.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_time_punches_one_open
+      ON time_punches(user_id) WHERE clock_out IS NULL
   `);
 
   // CREATE TABLE IF NOT EXISTS above only applies schema to a brand-new

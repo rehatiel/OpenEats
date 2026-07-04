@@ -36,7 +36,13 @@
     const pathname = $page.url.pathname;
     const user = $auth.user;
 
-    if (pathname === '/login') {
+    // Public, logged-in-or-not, no redirect either way — a dedicated
+    // time-clock kiosk terminal has no session of its own; PIN entry on
+    // that page is the actual credential (mirrors /api/auth/login's own
+    // PIN-only, no-bearer-token model).
+    if (pathname === '/punch') {
+      allowed = true;
+    } else if (pathname === '/login') {
       allowed = !user;
       if (user) goto(homeFor(user.role));
     } else if (!user) {

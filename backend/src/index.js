@@ -19,6 +19,8 @@ const { createReportsRouter } = require('./routes/reports');
 const { createVendorInvoicesRouter } = require('./routes/vendorInvoices');
 const { createCapexRouter } = require('./routes/capex');
 const { createInventoryCountsRouter } = require('./routes/inventoryCounts');
+const { createTimeClockRouter } = require('./routes/timeClock');
+const { createSchedulesRouter } = require('./routes/schedules');
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || './data/openeats.db';
@@ -51,6 +53,8 @@ app.use('/api/reports', createReportsRouter(db));
 app.use('/api/vendor-invoices', createVendorInvoicesRouter(db));
 app.use('/api/capex', createCapexRouter(db));
 app.use('/api/inventory-counts', createInventoryCountsRouter(db));
+app.use('/api/time-clock', createTimeClockRouter(db));
+app.use('/api/schedules', createSchedulesRouter(db));
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
